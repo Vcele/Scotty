@@ -7,12 +7,12 @@ plugins {
 }
 
 android {
-    namespace = "app.beamory"
+    namespace = "app.scotty"
     compileSdk = 36
     buildToolsVersion = "36.0.0"
 
     defaultConfig {
-        applicationId = "app.beamory"
+        applicationId = "app.scotty"
         minSdk = 30
         targetSdk = 36
         versionCode = 1
@@ -51,11 +51,19 @@ dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
 }
 
-dependencies {
-    testImplementation("junit:junit:4.13.2")
+
+// ---- Rust core ------------------------------------------------------------------------------
+// Builds core/ for the phone (arm64) and for Waydroid / emulators (x86_64) via cargo-ndk.
+val cargoBuild by tasks.registering(Exec::class) {
+    val core = rootProject.file("core")
+    val jniLibs = layout.projectDirectory.dir("src/main/jniLibs").asFile
+    workingDir = core
+    commandLine(
+        "cargo", "ndk", "-t", "arm64-v8a", "-t", "x86_64", "--platform", "30",
+        "-o", jniLibs.absolutePath, "build", "--release",
+    )
+    inputs.dir(core.resolve("src"))
+    inputs.file(core.resolve("Cargo.toml"))
+    outputs.dir(jniLibs)
 }
-android.testOptions.unitTests.isReturnDefaultValues = true
-tasks.withType<Test>().configureEach {
-    System.getProperty("beamory.tsdir")?.let { systemProperty("beamory.tsdir", it) }
-    testLogging { showStandardStreams = true }
-}
+tasks.named("preBuild") { dependsOn(cargoBuild) }
