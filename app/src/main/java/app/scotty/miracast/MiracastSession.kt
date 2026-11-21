@@ -28,12 +28,12 @@ import java.util.concurrent.TimeoutException
  * does the Wi-Fi Display RTSP negotiation and RTP streaming.
  */
 class MiracastSession(
-    private val ctx: Context,
+    ctx: Context,
     projection: MediaProjection,
     private val target: CastTarget.Miracast,
     onEnded: (String?) -> Unit,
 ) : NativeSession(
-    projection, ctx.resources.displayMetrics.densityDpi, rawPcm = false, onEnded = onEnded,
+    ctx, projection, ctx.resources.displayMetrics.densityDpi, rawPcm = false, reconnect = false, credentialKey = null, onEnded = onEnded,
     starter = { ScottyCore.miracastStart(ScottyCore.MIRACAST_PORT) },
 ) {
     private var receiver: BroadcastReceiver? = null

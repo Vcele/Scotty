@@ -15,8 +15,22 @@ android {
         applicationId = "app.scotty"
         minSdk = 30
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = (System.getenv("SCOTTY_VERSION_CODE")?.toIntOrNull() ?: 2)
+        versionName = (System.getenv("SCOTTY_VERSION") ?: "0.2.0")
+    }
+
+    // Release signing comes from the environment (CI secrets or a local keystore); without it the
+    // release build falls back to the debug key so it can still be sideloaded.
+    val releaseKeystore = System.getenv("SCOTTY_KEYSTORE")?.let { project.file(it) }?.takeIf { it.exists() }
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = System.getenv("SCOTTY_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("SCOTTY_KEY_ALIAS") ?: "scotty"
+                keyPassword = System.getenv("SCOTTY_KEY_PASSWORD") ?: System.getenv("SCOTTY_KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -24,8 +38,7 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
-            // Signed with the debug key so it can be sideloaded right away.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
     compileOptions {

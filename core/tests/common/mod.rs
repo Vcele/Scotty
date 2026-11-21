@@ -15,7 +15,7 @@ pub fn load() -> Media {
         return Media { video: split_access_units(&h264), audio: split_adts(&aac) };
     }
     let mut video = Vec::new();
-    for i in 0..60 {
+    for i in 0..150 {
         let key = i % 30 == 0;
         let mut au = Vec::new();
         if key {
@@ -26,7 +26,7 @@ pub fn load() -> Media {
         au.extend(std::iter::repeat_n(i as u8, 3000));
         video.push((au, key));
     }
-    let audio = (0..90).map(|_| vec![0xFF, 0xF1, 0x4C, 0x80, 0x01, 0x3F, 0xFC]).collect();
+    let audio = (0..230).map(|_| vec![0xFF, 0xF1, 0x4C, 0x80, 0x01, 0x3F, 0xFC]).collect();
     Media { video, audio }
 }
 

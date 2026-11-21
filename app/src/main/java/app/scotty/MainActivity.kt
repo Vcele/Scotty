@@ -2,8 +2,6 @@ package app.scotty
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.media.projection.MediaProjectionConfig
-import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -78,12 +76,6 @@ class MainActivity : ComponentActivity() {
 
     private fun requestProjection(target: CastTarget) {
         CastController.pendingTarget = target
-        val mpm = getSystemService(MediaProjectionManager::class.java)
-        val intent = if (Build.VERSION.SDK_INT >= 34) {
-            mpm.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
-        } else {
-            mpm.createScreenCaptureIntent()
-        }
-        projectionLauncher.launch(intent)
+        projectionLauncher.launch(app.scotty.system.Beam.projectionIntent(this))
     }
 }

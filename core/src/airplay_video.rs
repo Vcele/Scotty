@@ -8,7 +8,10 @@ use crate::events::{Event, Events};
 use crate::rtsp::{read_response, Message};
 use crate::session::Session;
 use crate::ts::{TsMuxer, TsSink, PACKET};
-use crate::util::rand_u64;
+use crate::ap2;
+use crate::hap::pairing::{self, Credentials};
+use crate::netutil::tune_tcp;
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::collections::VecDeque;
 use std::io::{self, BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -177,19 +180,24 @@ pub struct AirPlayScreenSession {
     hls: Mutex<Option<Arc<Hls>>>,
     control: Mutex<Option<TcpStream>>,
     session_id: String,
+    creds: Mutex<Option<Credentials>>,
+    pin_tx: Mutex<Sender<String>>,
+    pin_rx: Mutex<Option<Receiver<String>>>,
 }
 
 impl AirPlayScreenSession {
-    pub fn start(host: &str, port: u16) -> io::Result<Arc<Self>> {
+    pub fn start(host: &str, port: u16, creds: Option<String>) -> io::Result<Arc<Self>> {
+        let (pin_tx, pin_rx) = channel();
         let s = Arc::new(Self {
             events: Events::default(),
             stopped: AtomicBool::new(false),
             mux: Mutex::new(None),
             hls: Mutex::new(None),
             control: Mutex::new(None),
-            session_id: format!("{:08X}-{:04X}-4{:03X}-A{:03X}-{:012X}",
-                rand_u64() as u32, rand_u64() as u16, rand_u64() as u16 & 0xFFF, rand_u64() as u16 & 0xFFF,
-                rand_u64() & 0xFFFF_FFFF_FFFF),
+            session_id: pairing::uuid(),
+            creds: Mutex::new(creds.as_deref().and_then(Credentials::decode)),
+            pin_tx: Mutex::new(pin_tx),
+            pin_rx: Mutex::new(Some(pin_rx)),
         });
         let me = s.clone();
         let host = host.to_string();
@@ -236,20 +244,71 @@ impl AirPlayScreenSession {
         let body = format!("Content-Location: {url}\nStart-Position: 0.000000\n");
         let resp = self.http(&mut sock, host, port, "POST", "/play", Some(("text/parameters", body.as_bytes())))?;
         match resp.status() {
-            200 => {}
-            401 => return Err(io::Error::other("Receiver is password protected – turn off “Require password” in its AirPlay settings")),
-            403 => return Err(io::Error::other("Receiver refused – set AirPlay access to “Everyone on the same network”")),
-            470 | 471 => return Err(io::Error::other("Receiver requires HomeKit pairing, which Scotty can't do yet")),
-            s => return Err(io::Error::other(format!("Receiver can't play the stream ({s})"))),
+            200 => {
+                self.events.live("Streaming screen + sound (a few seconds behind)");
+                while !self.is_stopped() {
+                    thread::sleep(Duration::from_secs(3));
+                    if self.is_stopped() {
+                        break;
+                    }
+                    if self.http(&mut sock, host, port, "GET", "/playback-info", None).is_err() {
+                        if !self.is_stopped() {
+                            self.finish(None);
+                        }
+                        break;
+                    }
+                }
+                Ok(())
+            }
+            401 | 403 | 470 | 471 => {
+                // Apple TV (tvOS 10.2+) wants a HomeKit-paired, encrypted session for /play.
+                log::info!("plain /play refused ({}), pairing", resp.status());
+                let _ = sock.shutdown(std::net::Shutdown::Both);
+                self.run_paired(addr, &url)
+            }
+            s => Err(io::Error::other(format!("Receiver can't play the stream ({s})"))),
+        }
+    }
+
+    fn run_paired(&self, addr: SocketAddr, url: &str) -> io::Result<()> {
+        let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
+        tune_tcp(&tcp);
+        tcp.set_read_timeout(Some(Duration::from_secs(190)))?;
+        *self.control.lock().unwrap() = Some(tcp.try_clone()?);
+        self.events.status("Pairing…");
+        let creds = self.creds.lock().unwrap().clone();
+        let pin_rx = self.pin_rx.lock().unwrap().take().ok_or_else(|| io::Error::other("pairing already attempted"))?;
+        let secret = ap2::pair(&tcp, "HTTP/1.1", creds.as_ref(), &self.events, &pin_rx, false)?;
+        tcp.set_read_timeout(Some(Duration::from_secs(10)))?;
+        let mut client = ap2::SecureClient::new(&tcp, &secret, "HTTP/1.1")?;
+        client.headers = vec![("X-Apple-Session-ID".into(), self.session_id.clone())];
+        let mac: [u8; 6] = crate::hap::random();
+        let mac = mac.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":");
+        let body = ap2::bplist(ap2::dict(vec![
+            ("Content-Location", plist::Value::String(url.into())),
+            ("Start-Position-Seconds", plist::Value::Real(0.0)),
+            ("uuid", plist::Value::String(self.session_id.clone())),
+            ("streamType", plist::Value::Integer(1.into())),
+            ("mediaType", plist::Value::String("file".into())),
+            ("volume", plist::Value::Real(1.0)),
+            ("rate", plist::Value::Real(1.0)),
+            ("clientBundleID", plist::Value::String("app.scotty".into())),
+            ("clientProcName", plist::Value::String("Scotty".into())),
+            ("SenderMACAddress", plist::Value::String(mac)),
+            ("model", plist::Value::String("iPhone14,3".into())),
+            ("osBuildVersion", plist::Value::String("21F79".into())),
+        ]));
+        let r = client.request("POST", "/play", &[], Some(("application/x-apple-binary-plist", &body)))?;
+        if r.status() != 200 {
+            return Err(io::Error::other(format!("Receiver can't play the stream ({})", r.status())));
         }
         self.events.live("Streaming screen + sound (a few seconds behind)");
-
         while !self.is_stopped() {
             thread::sleep(Duration::from_secs(3));
             if self.is_stopped() {
                 break;
             }
-            if self.http(&mut sock, host, port, "GET", "/playback-info", None).is_err() {
+            if client.request("GET", "/playback-info", &[], None).is_err() {
                 if !self.is_stopped() {
                     self.finish(None);
                 }
@@ -308,6 +367,9 @@ impl AirPlayScreenSession {
 }
 
 impl Session for AirPlayScreenSession {
+    fn submit_pin(&self, pin: &str) {
+        let _ = self.pin_tx.lock().unwrap().send(pin.to_string());
+    }
     fn push_video(&self, data: &[u8], pts_us: i64, key: bool) {
         if let Some(m) = self.mux.lock().unwrap().as_mut() {
             m.write_video(data, pts_us, key);

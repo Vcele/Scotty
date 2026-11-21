@@ -4,7 +4,7 @@
 //! pointers. Every entry point catches panics so nothing unwinds across the FFI boundary.
 
 use crate::airplay_video::AirPlayScreenSession;
-use crate::raop::RaopSession;
+use crate::airplay_audio::{AirPlayAudio, Protocol};
 use crate::session::Session;
 use crate::wfd::MiracastSession;
 use jni::objects::{JByteArray, JClass, JString};
@@ -67,18 +67,22 @@ pub extern "system" fn Java_app_scotty_core_ScottyCore_miracastStart(_env: JNIEn
 
 #[no_mangle]
 pub extern "system" fn Java_app_scotty_core_ScottyCore_airplayAudioStart(
-    mut env: JNIEnv, _c: JClass, host: JString, port: jint, volume: jfloat,
+    mut env: JNIEnv, _c: JClass, host: JString, port: jint, volume: jfloat, protocol: jint, creds: JString,
 ) -> jlong {
     let host = string(&mut env, &host);
-    guard(-1, || start(RaopSession::start(&host, port as u16, volume).map(|s| s as Arc<dyn Session>)))
+    let creds = (!creds.is_null()).then(|| string(&mut env, &creds)).filter(|c| !c.is_empty());
+    guard(-1, || {
+        start(AirPlayAudio::start(&host, port as u16, volume, Protocol::from_i32(protocol), creds).map(|s| s as Arc<dyn Session>))
+    })
 }
 
 #[no_mangle]
 pub extern "system" fn Java_app_scotty_core_ScottyCore_airplayScreenStart(
-    mut env: JNIEnv, _c: JClass, host: JString, port: jint,
+    mut env: JNIEnv, _c: JClass, host: JString, port: jint, creds: JString,
 ) -> jlong {
     let host = string(&mut env, &host);
-    guard(-1, || start(AirPlayScreenSession::start(&host, port as u16).map(|s| s as Arc<dyn Session>)))
+    let creds = (!creds.is_null()).then(|| string(&mut env, &creds)).filter(|c| !c.is_empty());
+    guard(-1, || start(AirPlayScreenSession::start(&host, port as u16, creds).map(|s| s as Arc<dyn Session>)))
 }
 
 #[no_mangle]
@@ -125,5 +129,13 @@ pub extern "system" fn Java_app_scotty_core_ScottyCore_stop(_env: JNIEnv, _c: JC
     let s = registry().lock().unwrap().remove(&h);
     if let Some(s) = s {
         guard((), || s.stop());
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_app_scotty_core_ScottyCore_submitPin(mut env: JNIEnv, _c: JClass, h: jlong, pin: JString) {
+    let pin = string(&mut env, &pin);
+    if let Some(s) = get(h) {
+        guard((), || s.submit_pin(&pin));
     }
 }

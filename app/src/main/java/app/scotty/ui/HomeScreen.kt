@@ -89,6 +89,8 @@ import app.scotty.airplay.AirPlayDevice
 import app.scotty.cast.CastController
 import app.scotty.cast.CastState
 import app.scotty.cast.CastTarget
+import app.scotty.cast.Prefs
+import androidx.compose.material3.Switch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -102,6 +104,11 @@ fun HomeScreen(vm: MainViewModel, onCast: (CastTarget) -> Unit, onStop: () -> Un
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var airplayMode by rememberSaveable { mutableIntStateOf(0) } // 0 = audio, 1 = screen
     var showAdd by rememberSaveable { mutableStateOf(false) }
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var muteLocal by remember { mutableStateOf(Prefs.muteLocal(ctx)) }
+    (state as? CastState.Active)?.takeIf { it.pinRequested }?.let { s ->
+        PinDialog(s.target.name, onSubmit = CastController::submitPin, onCancel = onStop)
+    }
     if (showAdd) AddReceiverDialog(onDismiss = { showAdd = false }) { host, port -> vm.airplay.addManual(host, port); showAdd = false }
     val scroll = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
@@ -185,6 +192,14 @@ fun HomeScreen(vm: MainViewModel, onCast: (CastTarget) -> Unit, onStop: () -> Un
                         else HintCard(Icons.Rounded.Info, "Sends your screen and sound as a live video stream to Apple TV and AirPlay TVs. Runs a few seconds behind, so it suits videos and slides more than games.")
                     }
                 }
+                if (airplayMode == 0) item {
+                    ListItem(
+                        headlineContent = { Text("Silence this phone while beaming") },
+                        supportingContent = { Text("Sound plays only on the speaker; volume keys control the speaker") },
+                        trailingContent = { Switch(checked = muteLocal, onCheckedChange = { muteLocal = it; Prefs.setMuteLocal(ctx, it) }) },
+                        colors = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent),
+                    )
+                }
                 item {
                     SectionHeader("AirPlay receivers on this network", airplay.isEmpty()) {
                         TextButton(onClick = { showAdd = true }) {
@@ -207,7 +222,7 @@ fun HomeScreen(vm: MainViewModel, onCast: (CastTarget) -> Unit, onStop: () -> Un
                         onRemove = if (d.manual) ({ vm.airplay.removeManual(d) }) else null,
                         onClick = {
                             onCast(
-                                if (airplayMode == 0) CastTarget.AirPlayAudio(d.name, d.host, d.raopPort!!)
+                                if (airplayMode == 0) CastTarget.AirPlayAudio(d.name, d.host, d.raopPort!!, if (d.prefersAirPlay2) 2 else 0)
                                 else CastTarget.AirPlayScreen(d.name, d.host, d.airplayPort!!),
                             )
                         },

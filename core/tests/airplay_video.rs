@@ -25,7 +25,7 @@ fn play_request_and_hls_stream() {
     let _ = env_logger::builder().is_test(true).try_init();
     let receiver = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = receiver.local_addr().unwrap().port();
-    let src = AirPlayScreenSession::start("127.0.0.1", port).unwrap();
+    let src = AirPlayScreenSession::start("127.0.0.1", port, None).unwrap();
 
     assert!(matches!(src.events().poll(Duration::from_secs(1)), Some(Event::Status(_))));
     let (mut conn, _) = receiver.accept().unwrap();

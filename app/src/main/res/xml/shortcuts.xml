@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="beam_audio"
+        android:enabled="true"
+        android:icon="@drawable/ic_launcher_monochrome"
+        android:shortcutShortLabel="@string/shortcut_beam"
+        android:shortcutLongLabel="@string/shortcut_beam_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="app.scotty"
+            android:targetClass="app.scotty.system.BeamActivity" />
+    </shortcut>
+</shortcuts>

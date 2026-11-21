@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">Scotty</string>
+    <string name="shortcut_beam">Play audio on…</string>
+    <string name="shortcut_beam_long">Play audio on an AirPlay speaker</string>
 </resources>

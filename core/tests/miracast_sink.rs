@@ -83,7 +83,7 @@ fn full_wfd_session_streams_ts_over_rtp() {
             break;
         }
     }
-    assert_eq!(mode, Some(Event::Mode { width: 1920, height: 1080, fps: 30, bitrate: 10_000_000, level: 40, audio: true }));
+    assert_eq!(mode, Some(Event::Mode { width: 1920, height: 1080, fps: 30, bitrate: 8_000_000, level: 40, audio: true }));
 
     // IDR request (M13) → KeyFrame event
     write!(w, "SET_PARAMETER rtsp://localhost/wfd1.0 RTSP/1.0\r\nCSeq: 4\r\nSession: {session}\r\nContent-Type: text/parameters\r\nContent-Length: 17\r\n\r\nwfd_idr_request\r\n").unwrap();
@@ -109,7 +109,7 @@ fn full_wfd_session_streams_ts_over_rtp() {
         }
         ts
     });
-    common::feed(&media, |v, t, k| { src.push_video(v, t, k); std::thread::sleep(Duration::from_micros(300)) }, |a, t| src.push_audio(a, t));
+    common::feed(&media, |v, t, k| { src.push_video(v, t, k); std::thread::sleep(Duration::from_millis(33)) }, |a, t| src.push_audio(a, t));
     let ts = collector.join().unwrap();
     assert!(!ts.is_empty());
     assert!(ts.chunks(188).all(|p| p[0] == 0x47));

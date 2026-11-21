@@ -8,6 +8,7 @@ use crate::events::{Event, Events};
 use crate::rtsp::{Conn, Message};
 use crate::session::Session;
 use crate::ts::{TsMuxer, TsSink, PACKET};
+use crate::netutil::{udp, TOS_VIDEO};
 use crate::util::{mono_us, rand_u32};
 use std::collections::HashMap;
 use std::io;
@@ -37,9 +38,9 @@ pub struct Mode {
 
 /// Best first.
 pub const MODES: [Mode; 4] = [
-    Mode { cea_bit: 7, width: 1920, height: 1080, fps: 30, wfd_level: 0x04, avc_level: 40, bitrate: 10_000_000 },
-    Mode { cea_bit: 6, width: 1280, height: 720, fps: 60, wfd_level: 0x02, avc_level: 32, bitrate: 8_000_000 },
-    Mode { cea_bit: 5, width: 1280, height: 720, fps: 30, wfd_level: 0x01, avc_level: 31, bitrate: 5_000_000 },
+    Mode { cea_bit: 7, width: 1920, height: 1080, fps: 30, wfd_level: 0x04, avc_level: 40, bitrate: 8_000_000 },
+    Mode { cea_bit: 6, width: 1280, height: 720, fps: 60, wfd_level: 0x02, avc_level: 32, bitrate: 6_000_000 },
+    Mode { cea_bit: 5, width: 1280, height: 720, fps: 30, wfd_level: 0x01, avc_level: 31, bitrate: 4_000_000 },
     Mode { cea_bit: 0, width: 640, height: 480, fps: 60, wfd_level: 0x01, avc_level: 31, bitrate: 2_500_000 },
 ];
 
@@ -62,20 +63,44 @@ pub fn choose_formats(caps: &HashMap<String, String>) -> (Mode, bool) {
     (mode, audio)
 }
 
-/// TS packets → RTP (PT 33), 7 per datagram.
+/// TS packets → RTP (PT 33), 7 per datagram, handed to a pacing thread.
+///
+/// Key frames are hundreds of datagrams; blasting them out at once overflows Wi-Fi Direct
+/// queues and the sink shows block artefacts or freezes. The pacer spreads them at a multiple of
+/// the video bitrate. If the link stalls and more than ~1 s is queued, the backlog is dropped and
+/// a fresh key frame is requested so the picture recovers instead of lagging further behind.
 pub struct RtpTsSender {
-    sock: UdpSocket,
-    dest: SocketAddr,
     buf: [u8; 12 + 7 * PACKET],
     count: usize,
     seq: u16,
     ssrc: u32,
+    pacer: Arc<Pacer>,
+}
+
+struct Pacer {
+    queue: Mutex<std::collections::VecDeque<Vec<u8>>>,
+    queued_bytes: std::sync::atomic::AtomicUsize,
+    cv: std::sync::Condvar,
+    stopped: AtomicBool,
+    /// bytes per second
+    rate: usize,
+    on_overflow: Box<dyn Fn() + Send + Sync>,
 }
 
 impl RtpTsSender {
-    pub fn new(dest: SocketAddr) -> io::Result<Self> {
-        let sock = UdpSocket::bind(("0.0.0.0", 0))?;
-        Ok(Self { sock, dest, buf: [0; 12 + 7 * PACKET], count: 0, seq: rand_u32() as u16, ssrc: rand_u32() })
+    pub fn new(dest: SocketAddr, bitrate: u32, on_overflow: Box<dyn Fn() + Send + Sync>) -> io::Result<Self> {
+        let sock = udp(TOS_VIDEO, None)?;
+        let pacer = Arc::new(Pacer {
+            queue: Mutex::new(Default::default()),
+            queued_bytes: Default::default(),
+            cv: Default::default(),
+            stopped: AtomicBool::new(false),
+            rate: (bitrate as usize / 8 * 3).max(1_500_000),
+            on_overflow,
+        });
+        let p = pacer.clone();
+        thread::Builder::new().name("rtp-pacer".into()).spawn(move || p.run(sock, dest))?;
+        Ok(Self { buf: [0; 12 + 7 * PACKET], count: 0, seq: rand_u32() as u16, ssrc: rand_u32(), pacer })
     }
 
     fn flush(&mut self) {
@@ -89,10 +114,64 @@ impl RtpTsSender {
         self.buf[4..8].copy_from_slice(&ts.to_be_bytes());
         self.buf[8..12].copy_from_slice(&self.ssrc.to_be_bytes());
         self.seq = self.seq.wrapping_add(1);
-        if let Err(e) = self.sock.send_to(&self.buf[..12 + self.count * PACKET], self.dest) {
-            log::warn!("rtp send: {e}");
-        }
+        self.pacer.push(self.buf[..12 + self.count * PACKET].to_vec());
         self.count = 0;
+    }
+}
+
+impl Drop for RtpTsSender {
+    fn drop(&mut self) {
+        self.pacer.stopped.store(true, Ordering::SeqCst);
+        self.pacer.cv.notify_all();
+    }
+}
+
+impl Pacer {
+    fn push(&self, d: Vec<u8>) {
+        let len = d.len();
+        let mut q = self.queue.lock().unwrap();
+        if self.queued_bytes.load(Ordering::Relaxed) + len > self.rate / 3 {
+            // ~1 s of nominal video stuck in the queue: the link can't keep up.
+            log::warn!("rtp backlog overflow, dropping {} datagrams", q.len());
+            q.clear();
+            self.queued_bytes.store(0, Ordering::Relaxed);
+            (self.on_overflow)();
+        }
+        q.push_back(d);
+        self.queued_bytes.fetch_add(len, Ordering::Relaxed);
+        self.cv.notify_one();
+    }
+
+    fn run(&self, sock: UdpSocket, dest: SocketAddr) {
+        let burst = 24.0 * 1024.0;
+        let mut tokens = burst;
+        let mut last = Instant::now();
+        while !self.stopped.load(Ordering::SeqCst) {
+            let d = {
+                let mut q = self.queue.lock().unwrap();
+                while q.is_empty() && !self.stopped.load(Ordering::SeqCst) {
+                    q = self.cv.wait_timeout(q, Duration::from_millis(200)).unwrap().0;
+                }
+                match q.pop_front() {
+                    Some(d) => d,
+                    None => continue,
+                }
+            };
+            self.queued_bytes.fetch_sub(d.len(), Ordering::Relaxed);
+            let now = Instant::now();
+            tokens = (tokens + now.duration_since(last).as_secs_f64() * self.rate as f64).min(burst);
+            last = now;
+            if tokens < d.len() as f64 {
+                let wait = (d.len() as f64 - tokens) / self.rate as f64;
+                thread::sleep(Duration::from_secs_f64(wait));
+                tokens = d.len() as f64;
+                last = Instant::now();
+            }
+            tokens -= d.len() as f64;
+            if let Err(e) = sock.send_to(&d, dest) {
+                log::debug!("rtp send: {e}");
+            }
+        }
     }
 }
 
@@ -111,7 +190,7 @@ impl TsSink for RtpTsSender {
 }
 
 pub struct MiracastSession {
-    events: Events,
+    events: Arc<Events>,
     stopped: AtomicBool,
     session_id: String,
     conn: Mutex<Option<Arc<Conn>>>,
@@ -128,7 +207,7 @@ impl MiracastSession {
         let listener = TcpListener::bind(("0.0.0.0", port))?;
         listener.set_nonblocking(true)?;
         let s = Arc::new(Self {
-            events: Events::default(),
+            events: Arc::new(Events::default()),
             stopped: AtomicBool::new(false),
             session_id: format!("{}", 10_000_000 + rand_u32() % 89_999_999),
             conn: Mutex::new(None),
@@ -223,19 +302,29 @@ impl MiracastSession {
         }
         *self.negotiated.lock().unwrap() = Some((mode, audio, rtp_ports.clone()));
 
-        // M4
-        let mut params = format!(
-            "wfd_video_formats: 00 00 01 {:02x} {:08x} 00000000 00000000 00 0000 0000 00 none none\r\n",
-            mode.wfd_level,
-            1u32 << mode.cea_bit
-        );
-        if audio {
-            params += "wfd_audio_codecs: AAC 00000001 00\r\n";
+        // M4 – propose the best mode; if the sink refuses, step down until one sticks.
+        let start = MODES.iter().position(|m| *m == mode).unwrap_or(2);
+        let mut accepted = None;
+        for candidate in MODES[start..].iter().copied() {
+            let mut params = format!(
+                "wfd_video_formats: 00 00 01 {:02x} {:08x} 00000000 00000000 00 0000 0000 00 none none\r\n",
+                candidate.wfd_level,
+                1u32 << candidate.cea_bit
+            );
+            if audio {
+                params += "wfd_audio_codecs: AAC 00000001 00\r\n";
+            }
+            params += &format!("wfd_presentation_URL: rtsp://{}/wfd1.0/streamid=0 none\r\n", conn.local_ip());
+            params += &format!("wfd_client_rtp_ports: {rtp_ports}\r\n");
+            let m4 = conn.request("SET_PARAMETER", URI, &[], Some(("text/parameters", params.as_bytes())), t)?;
+            if m4.status() == 200 {
+                accepted = Some(candidate);
+                break;
+            }
+            log::warn!("sink refused {}x{}@{} ({}), trying lower", candidate.width, candidate.height, candidate.fps, m4.status());
         }
-        params += &format!("wfd_presentation_URL: rtsp://{}/wfd1.0/streamid=0 none\r\n", conn.local_ip());
-        params += &format!("wfd_client_rtp_ports: {rtp_ports}\r\n");
-        let m4 = conn.request("SET_PARAMETER", URI, &[], Some(("text/parameters", params.as_bytes())), t)?;
-        expect_ok(&m4, "Display refused the stream format")?;
+        let mode = accepted.ok_or_else(|| io::Error::other("Display refused every stream format"))?;
+        *self.negotiated.lock().unwrap() = Some((mode, audio, rtp_ports.clone()));
 
         // M5 → sink sends SETUP (M6) and PLAY (M7)
         self.events.status(format!("Negotiating {}×{} @ {} fps…", mode.width, mode.height, mode.fps));
@@ -314,7 +403,8 @@ impl MiracastSession {
         }
         let Some((mode, audio, _)) = *self.negotiated.lock().unwrap() else { return };
         let dest = SocketAddr::new(c.peer_ip(), self.sink_rtp_port.load(Ordering::SeqCst));
-        match RtpTsSender::new(dest) {
+        let ev = self.events.clone();
+        match RtpTsSender::new(dest, mode.bitrate, Box::new(move || ev.emit(Event::KeyFrame))) {
             Ok(sender) => {
                 *mux = Some(TsMuxer::new(true, audio, sender));
                 self.events.emit(Event::Mode {

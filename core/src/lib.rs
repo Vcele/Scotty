@@ -10,7 +10,12 @@
 //!
 //! Sessions report back through a small event queue that Kotlin polls ([`events`]).
 
+pub mod airplay_audio;
 pub mod airplay_video;
+pub mod ap2;
+pub mod hap;
+pub mod netutil;
+pub mod rtp_audio;
 pub mod events;
 pub mod raop;
 pub mod rtsp;

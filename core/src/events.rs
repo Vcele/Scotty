@@ -14,6 +14,10 @@ pub enum Event {
     Mode { width: u32, height: u32, fps: u32, bitrate: u32, level: u32, audio: bool },
     /// Receiver asked for an IDR frame.
     KeyFrame,
+    /// Receiver shows a PIN; the app should ask the user and call `submit_pin`.
+    PinRequired,
+    /// New long-term pairing to store for this receiver.
+    Credentials(String),
     /// Session is over; `Some(reason)` if it failed.
     Ended(Option<String>),
 }
@@ -27,6 +31,8 @@ impl Event {
                 format!("mode\t{width}\t{height}\t{fps}\t{bitrate}\t{level}\t{}", *audio as u8)
             }
             Event::KeyFrame => "idr".into(),
+            Event::PinRequired => "pin".into(),
+            Event::Credentials(c) => format!("creds\t{c}"),
             Event::Ended(e) => format!("ended\t{}", e.as_deref().unwrap_or("")),
         }
     }

@@ -27,6 +27,8 @@ data class AirPlayDevice(
     val supportsVideo get() = airplayPort != null && (features and 1L) != 0L
     val supportsAudio get() = raopPort != null
     val isAppleTv get() = model?.startsWith("AppleTV") == true
+    /** Apple receivers (HomePod, Apple TV) speak AirPlay 2 natively; others get AirPlay 1 first. */
+    val prefersAirPlay2 get() = isAppleTv || model?.startsWith("AudioAccessory") == true
     val isSpeaker get() = model?.let { it.startsWith("AudioAccessory") || it.startsWith("AirPort") } == true ||
         (airplayPort == null && raopPort != null)
 }
