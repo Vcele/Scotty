@@ -171,9 +171,9 @@ open class NativeSession(
             val app = nowPlaying?.currentPackage?.let { pkg ->
                 runCatching { ctx.packageManager.getApplicationLabel(ctx.packageManager.getApplicationInfo(pkg, 0)).toString() }.getOrNull()
             } ?: "The app that's playing"
-            val msg = if (blocked) " doesn't allow other apps to capture its audio, so it keeps playing on this phone."
-            else "No sound is reaching Scotty from . Try pausing and resuming playback."
-            Log.w(TAG, "capture silent for ms while music active (policy blocked=, app=)")
+            val msg = if (blocked) "$app doesn't allow other apps to capture its audio, so it keeps playing on this phone."
+            else "No sound is reaching Scotty from $app. Try pausing and resuming playback."
+            Log.w(TAG, "capture silent for ${silentFor}ms while music active (policy blocked=$blocked, app=$app)")
             CastController.warn(msg)
             CastController.captureBlockedListener?.invoke(true)
         } else if (captureWarning && silentFor < 1000) {
