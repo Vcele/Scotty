@@ -134,6 +134,15 @@ class CastService : Service() {
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(target))
 
         if (hasRemoteVolume && Prefs.muteLocal(this)) muteLocalSpeaker()
+        if (hasRemoteVolume) {
+            // If the playing app blocks capture, give the phone its sound back instead of silence.
+            CastController.captureBlockedListener = { blocked ->
+                main.post {
+                    if (blocked) unmuteLocalSpeaker()
+                    else if (Prefs.muteLocal(this) && mutedMusicVolume == null && CastController.session != null) muteLocalSpeaker()
+                }
+            }
+        }
     }
 
     /**
@@ -167,7 +176,7 @@ class CastService : Service() {
         ContextCompat.registerReceiver(this, rec, IntentFilter(VOLUME_CHANGED_ACTION), ContextCompat.RECEIVER_EXPORTED)
     }
 
-    private fun teardownSystemHooks() {
+    private fun unmuteLocalSpeaker() {
         volumeReceiver?.let { runCatching { unregisterReceiver(it) } }
         volumeReceiver = null
         mutedMusicVolume?.let {
@@ -177,6 +186,11 @@ class CastService : Service() {
             }
         }
         mutedMusicVolume = null
+    }
+
+    private fun teardownSystemHooks() {
+        unmuteLocalSpeaker()
+        CastController.captureBlockedListener = null
         CastController.volumeListener = null
         mediaSession?.release()
         mediaSession = null

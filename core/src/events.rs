@@ -58,7 +58,10 @@ impl Events {
                 return; // only one Ended per session
             }
         }
-        log::info!("event: {e:?}");
+        match &e {
+            Event::Credentials(_) => log::info!("event: Credentials(<redacted>)"),
+            e => log::info!("event: {e:?}"),
+        }
         let _ = self.tx.send(e);
     }
     pub fn status(&self, s: impl Into<String>) {

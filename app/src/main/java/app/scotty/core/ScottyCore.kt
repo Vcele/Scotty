@@ -16,7 +16,7 @@ object ScottyCore {
      * AirPlay audio. Push 16-bit LE stereo 44.1 kHz PCM. [protocol]: 0 auto, 1 AirPlay 1, 2 AirPlay 2.
      * [credentials]: stored pairing from a previous `creds` event, or null.
      */
-    external fun airplayAudioStart(host: String, port: Int, volume: Float, protocol: Int, credentials: String?): Long
+    external fun airplayAudioStart(host: String, raopPort: Int, ap2Port: Int, volume: Float, protocol: Int, credentials: String?): Long
 
     /** AirPlay screen + audio via HLS + /play. Push H.264 + ADTS AAC. */
     external fun airplayScreenStart(host: String, port: Int, credentials: String?): Long
@@ -24,6 +24,12 @@ object ScottyCore {
     external fun pushVideo(handle: Long, data: ByteArray, ptsUs: Long, keyFrame: Boolean)
     external fun pushAudio(handle: Long, data: ByteArray, ptsUs: Long)
     external fun setVolume(handle: Long, volume: Float)
+
+    /** Now-playing info for the receiver display (AirPlay audio). */
+    external fun setMetadata(
+        handle: Long, title: String?, artist: String?, album: String?,
+        artwork: ByteArray?, artworkMime: String?, durationMs: Long, positionMs: Long,
+    )
 
     /** PIN the user typed after a `pin` event. */
     external fun submitPin(handle: Long, pin: String)

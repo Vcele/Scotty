@@ -198,6 +198,20 @@ impl RaopSession {
 }
 
 impl Session for RaopSession {
+    fn set_metadata(&self, m: &crate::metadata::Metadata) {
+        let c = self.control.lock().unwrap().as_ref().map(|c| (c.conn.clone(), c.url.clone(), c.session.clone()));
+        let Some((conn, url, session)) = c else { return };
+        for (ty, body, rtptime) in crate::metadata::requests(self.audio.current_rtp(), m, true) {
+            let mut h: Vec<(&str, String)> = vec![("RTP-Info", format!("rtptime={rtptime}"))];
+            if let Some(s) = &session {
+                h.push(("Session", s.clone()));
+            }
+            match conn.request("SET_PARAMETER", &url, &h, Some((&ty, &body)), Duration::from_secs(5)) {
+                Ok(r) => log::info!("metadata {ty} → {}", r.status()),
+                Err(e) => log::warn!("metadata {ty}: {e}"),
+            }
+        }
+    }
     fn push_audio(&self, data: &[u8], _pts_us: i64) {
         self.audio.push_pcm(data);
     }

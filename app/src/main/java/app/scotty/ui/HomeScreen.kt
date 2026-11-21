@@ -38,6 +38,9 @@ import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.BugReport
+import androidx.compose.material.icons.rounded.Warning
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.automirrored.rounded.ScreenShare
 import androidx.compose.material.icons.rounded.Speaker
 import androidx.compose.material.icons.rounded.Tv
@@ -94,7 +97,7 @@ import androidx.compose.material3.Switch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(vm: MainViewModel, onCast: (CastTarget) -> Unit, onStop: () -> Unit) {
+fun HomeScreen(vm: MainViewModel, onCast: (CastTarget) -> Unit, onStop: () -> Unit, onDiagnostics: () -> Unit = {}) {
     val state by CastController.state.collectAsStateWithLifecycle()
     val wfd by vm.miracast.devices.collectAsStateWithLifecycle()
     val wfdScanning by vm.miracast.scanning.collectAsStateWithLifecycle()
@@ -119,6 +122,7 @@ fun HomeScreen(vm: MainViewModel, onCast: (CastTarget) -> Unit, onStop: () -> Un
                 title = { Text("Scotty") },
                 actions = {
                     IconButton(onClick = vm::refresh) { Icon(Icons.Rounded.Refresh, "Search again") }
+                    IconButton(onClick = onDiagnostics) { Icon(Icons.Rounded.BugReport, "Share diagnostics") }
                 },
                 scrollBehavior = scroll,
             )
@@ -192,6 +196,7 @@ fun HomeScreen(vm: MainViewModel, onCast: (CastTarget) -> Unit, onStop: () -> Un
                         else HintCard(Icons.Rounded.Info, "Sends your screen and sound as a live video stream to Apple TV and AirPlay TVs. Runs a few seconds behind, so it suits videos and slides more than games.")
                     }
                 }
+                if (airplayMode == 0) item { SongInfoRow() }
                 if (airplayMode == 0) item {
                     ListItem(
                         headlineContent = { Text("Silence this phone while beaming") },
@@ -222,7 +227,7 @@ fun HomeScreen(vm: MainViewModel, onCast: (CastTarget) -> Unit, onStop: () -> Un
                         onRemove = if (d.manual) ({ vm.airplay.removeManual(d) }) else null,
                         onClick = {
                             onCast(
-                                if (airplayMode == 0) CastTarget.AirPlayAudio(d.name, d.host, d.raopPort!!, if (d.prefersAirPlay2) 2 else 0)
+                                if (airplayMode == 0) CastTarget.AirPlayAudio(d.name, d.host, d.raopPort ?: d.ap2Port, if (d.prefersAirPlay2) 2 else 0, d.ap2Port)
                                 else CastTarget.AirPlayScreen(d.name, d.host, d.airplayPort!!),
                             )
                         },
@@ -276,6 +281,14 @@ private fun ActiveCard(s: CastState.Active, onStop: () -> Unit) {
             }
             Spacer(Modifier.height(12.dp))
             Text(s.status, style = MaterialTheme.typography.bodyMedium)
+            s.warning?.let { w ->
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.Top) {
+                    Icon(Icons.Rounded.Warning, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(w, style = MaterialTheme.typography.bodySmall)
+                }
+            }
             if (!s.live && !s.error) {
                 Spacer(Modifier.height(12.dp))
                 LinearProgressIndicator(Modifier.fillMaxWidth())
@@ -422,5 +435,41 @@ private fun AddReceiverDialog(onDismiss: () -> Unit, onAdd: (String, Int) -> Uni
         },
         confirmButton = { TextButton(onClick = { onAdd(host, port.toInt()) }, enabled = valid) { Text("Add") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** Asks for notification access so song info + cover can be shown on the speaker. */
+@Composable
+private fun SongInfoRow() {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var enabled by remember { mutableStateOf(app.scotty.system.NowPlaying.isEnabled(ctx)) }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        while (true) {
+            enabled = app.scotty.system.NowPlaying.isEnabled(ctx)
+            kotlinx.coroutines.delay(1500)
+        }
+    }
+    ListItem(
+        headlineContent = { Text("Show song info & cover on the speaker") },
+        supportingContent = {
+            Text(
+                if (enabled) "On – title, artist, album art and progress are sent along"
+                else "Needs “Notification access” to see what's playing. If the switch is greyed out: " +
+                    "App info → ⋮ → Allow restricted settings.",
+            )
+        },
+        trailingContent = {
+            if (enabled) Icon(Icons.Rounded.Check, "Enabled", tint = MaterialTheme.colorScheme.primary)
+            else TextButton(onClick = {
+                val intent = android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
+                    .putExtra(
+                        android.provider.Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME,
+                        android.content.ComponentName(ctx, app.scotty.system.NowPlayingListener::class.java).flattenToString(),
+                    )
+                runCatching { ctx.startActivity(intent) }
+                    .onFailure { ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+            }) { Text("Allow") }
+        },
+        colors = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent),
     )
 }

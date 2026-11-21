@@ -207,10 +207,16 @@ impl Conn {
         head += "\r\n";
         log::debug!(">> {method} {uri}");
         self.write(head.as_bytes(), body.map(|b| b.1))?;
-        rx.recv_timeout(timeout).map_err(|_| {
+        let r = rx.recv_timeout(timeout).map_err(|_| {
             self.pending.lock().unwrap().remove(&id);
             io::Error::new(io::ErrorKind::TimedOut, format!("no reply to {method}"))
-        })
+        });
+        if let Ok(m) = &r {
+            log::info!("{method} {uri} → {}", m.status());
+        } else {
+            log::warn!("{method} {uri} → no reply");
+        }
+        r
     }
 
     pub fn respond(&self, req: &Message, status: u16, headers: &[(&str, String)], body: Option<&str>) {

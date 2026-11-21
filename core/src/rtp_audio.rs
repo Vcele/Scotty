@@ -53,7 +53,6 @@ struct Stream {
     first: bool,
     start: Option<Instant>,
     history: Vec<Option<Vec<u8>>>,
-    nonce: u64,
 }
 
 /// Where packets go once the receiver told us its ports.
@@ -71,6 +70,9 @@ pub struct RtpAudio {
     stream: Mutex<Stream>,
     dest: Mutex<Option<Destination>>,
     samples_sent: AtomicU64,
+    silent_frames: AtomicU64,
+    timing_requests: AtomicU64,
+    resend_requests: AtomicU64,
     pub rtp_start: u32,
     pub first_seq: u16,
     ssrc: u32,
@@ -93,10 +95,12 @@ impl RtpAudio {
                 first: true,
                 start: None,
                 history: vec![None; HISTORY],
-                nonce: 0,
             }),
             dest: Mutex::new(None),
             samples_sent: AtomicU64::new(0),
+            silent_frames: AtomicU64::new(0),
+            timing_requests: AtomicU64::new(0),
+            resend_requests: AtomicU64::new(0),
             rtp_start: rand_u32() & 0x7FFF_FFFF,
             first_seq,
             ssrc: rand_u32(),
@@ -118,6 +122,11 @@ impl RtpAudio {
     pub fn start(self: &Arc<Self>, dest: Destination) {
         *self.dest.lock().unwrap() = Some(dest);
         self.spawn_sync();
+    }
+
+    /// RTP timestamp of the next sample to be sent (= what is being captured right now).
+    pub fn current_rtp(&self) -> u32 {
+        self.rtp_start.wrapping_add(self.samples_sent.load(Ordering::SeqCst) as u32)
     }
 
     pub fn stop(&self) {
@@ -142,6 +151,9 @@ impl RtpAudio {
         }
         while st.pending.len() >= FRAME_BYTES {
             let chunk: Vec<u8> = st.pending.drain(..FRAME_BYTES).collect();
+            if chunk.iter().all(|&b| b == 0) {
+                self.silent_frames.fetch_add(1, Ordering::Relaxed);
+            }
             let start = *st.start.get_or_insert_with(Instant::now);
             // Capture stalls (nothing playing, CPU hiccup): pad with silence so the RTP clock
             // keeps pace with real time and the receiver never underruns.
@@ -166,9 +178,9 @@ impl RtpAudio {
         match &self.key {
             None => p.extend_from_slice(&alac),
             Some(key) => {
-                // AirPlay 2 realtime: AAD = timestamp+ssrc, trailing 8 nonce bytes.
-                st.nonce += 1;
-                let nb = st.nonce.to_le_bytes();
+                // AirPlay 2 realtime: AAD = timestamp+ssrc, nonce = sequence number (so a
+                // retransmitted packet is byte-identical), trailing 8 nonce bytes.
+                let nb = (st.seq as u64).to_le_bytes();
                 let nonce = nonce_from(&nb);
                 let aad: [u8; 8] = p[4..12].try_into().unwrap();
                 p.extend_from_slice(&seal(key, &nonce, &aad, &alac));
@@ -197,6 +209,7 @@ impl RtpAudio {
                 if n < 32 || buf[1] & 0x7F != 0x52 {
                     continue;
                 }
+                me.timing_requests.fetch_add(1, Ordering::Relaxed);
                 let recv = ntp_now();
                 let mut r = [0u8; 32];
                 r[0] = 0x80;
@@ -239,6 +252,7 @@ impl RtpAudio {
                         })
                         .collect()
                 };
+                me.resend_requests.fetch_add(1, Ordering::Relaxed);
                 log::debug!("retransmit {count} from {first}: {} available", resend.len());
                 for r in resend {
                     let _ = me.control_sock.send_to(&r, from);
@@ -251,10 +265,21 @@ impl RtpAudio {
         let me = Arc::downgrade(self);
         thread::Builder::new().name("rtp-sync".into()).spawn(move || {
             let mut first = true;
+            let mut ticks = 0u32;
             loop {
                 let Some(me) = me.upgrade() else { break };
                 if me.is_stopped() {
                     break;
+                }
+                ticks += 1;
+                if ticks % 10 == 0 {
+                    let frames = me.samples_sent.load(Ordering::SeqCst) / FRAMES as u64;
+                    log::info!(
+                        "audio stats: {frames} packets, {} silent captured, {} timing requests, {} resend requests",
+                        me.silent_frames.load(Ordering::Relaxed),
+                        me.timing_requests.load(Ordering::Relaxed),
+                        me.resend_requests.load(Ordering::Relaxed)
+                    );
                 }
                 if let Some(Destination { control: Some(dest), .. }) = *me.dest.lock().unwrap() {
                     let now = me.rtp_start.wrapping_add(me.samples_sent.load(Ordering::SeqCst) as u32);

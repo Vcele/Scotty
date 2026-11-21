@@ -12,13 +12,20 @@ sealed interface CastTarget {
     data class Miracast(override val name: String, val deviceAddress: String) : CastTarget
 
     /** [protocol]: 0 = auto (AirPlay 1, upgrade to 2 if needed), 2 = AirPlay 2 straight away. */
-    data class AirPlayAudio(override val name: String, val host: String, val port: Int, val protocol: Int = 0) : CastTarget
+    /** [port]: AirPlay 1 (RAOP) port, [ap2Port]: AirPlay 2 port (_airplay._tcp). */
+    data class AirPlayAudio(
+        override val name: String,
+        val host: String,
+        val port: Int,
+        val protocol: Int = 0,
+        val ap2Port: Int = port,
+    ) : CastTarget
 
     data class AirPlayScreen(override val name: String, val host: String, val port: Int) : CastTarget
 
     fun encode(): String = when (this) {
         is Miracast -> listOf("miracast", name, deviceAddress)
-        is AirPlayAudio -> listOf("audio", name, host, port.toString(), protocol.toString())
+        is AirPlayAudio -> listOf("audio", name, host, port.toString(), protocol.toString(), ap2Port.toString())
         is AirPlayScreen -> listOf("screen", name, host, port.toString())
     }.joinToString("\u001F")
 
@@ -28,7 +35,7 @@ sealed interface CastTarget {
             return runCatching {
                 when (p[0]) {
                     "miracast" -> Miracast(p[1], p[2])
-                    "audio" -> AirPlayAudio(p[1], p[2], p[3].toInt(), p.getOrNull(4)?.toInt() ?: 0)
+                    "audio" -> AirPlayAudio(p[1], p[2], p[3].toInt(), p.getOrNull(4)?.toInt() ?: 0, p.getOrNull(5)?.toInt() ?: p[3].toInt())
                     "screen" -> AirPlayScreen(p[1], p[2], p[3].toInt())
                     else -> null
                 }
@@ -54,6 +61,8 @@ sealed interface CastState {
         val volume: Float = 0.8f,
         /** Receiver is showing a PIN that the user must type in. */
         val pinRequested: Boolean = false,
+        /** Non-fatal problem, e.g. the playing app blocks audio capture. */
+        val warning: String? = null,
     ) : CastState
 }
 
@@ -86,6 +95,8 @@ object CastController {
     @Volatile internal var session: CastSession? = null
     /** Notified when the volume changes from any source (UI slider, volume keys). */
     @Volatile internal var volumeListener: ((Float) -> Unit)? = null
+    /** Told when captured audio turns silent although music plays (true) or recovers (false). */
+    @Volatile internal var captureBlockedListener: ((Boolean) -> Unit)? = null
 
     val isActive get() = _state.value is CastState.Active && session != null
 
@@ -100,6 +111,8 @@ object CastController {
     fun error(text: String) = _state.update {
         if (it is CastState.Active) it.copy(status = text, live = false, error = true, pinRequested = false) else it
     }
+
+    fun warn(text: String?) = _state.update { if (it is CastState.Active) it.copy(warning = text) else it }
 
     fun pinRequested() = _state.update { if (it is CastState.Active) it.copy(pinRequested = true) else it }
 

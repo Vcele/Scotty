@@ -8,6 +8,8 @@ pub trait Session: Send + Sync {
     fn push_audio(&self, _data: &[u8], _pts_us: i64) {}
     /// 0.0 – 1.0
     fn set_volume(&self, _volume: f32) {}
+    /// Now-playing info to show on the receiver.
+    fn set_metadata(&self, _m: &crate::metadata::Metadata) {}
     /// PIN typed by the user after [`crate::events::Event::PinRequired`].
     fn submit_pin(&self, _pin: &str) {}
     fn stop(&self);

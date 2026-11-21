@@ -67,12 +67,12 @@ pub extern "system" fn Java_app_scotty_core_ScottyCore_miracastStart(_env: JNIEn
 
 #[no_mangle]
 pub extern "system" fn Java_app_scotty_core_ScottyCore_airplayAudioStart(
-    mut env: JNIEnv, _c: JClass, host: JString, port: jint, volume: jfloat, protocol: jint, creds: JString,
+    mut env: JNIEnv, _c: JClass, host: JString, raop_port: jint, ap2_port: jint, volume: jfloat, protocol: jint, creds: JString,
 ) -> jlong {
     let host = string(&mut env, &host);
     let creds = (!creds.is_null()).then(|| string(&mut env, &creds)).filter(|c| !c.is_empty());
     guard(-1, || {
-        start(AirPlayAudio::start(&host, port as u16, volume, Protocol::from_i32(protocol), creds).map(|s| s as Arc<dyn Session>))
+        start(AirPlayAudio::start(&host, raop_port as u16, ap2_port as u16, volume, Protocol::from_i32(protocol), creds).map(|s| s as Arc<dyn Session>))
     })
 }
 
@@ -138,4 +138,24 @@ pub extern "system" fn Java_app_scotty_core_ScottyCore_submitPin(mut env: JNIEnv
     if let Some(s) = get(h) {
         guard((), || s.submit_pin(&pin));
     }
+}
+
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_app_scotty_core_ScottyCore_setMetadata(
+    mut env: JNIEnv, _c: JClass, h: jlong, title: JString, artist: JString, album: JString,
+    artwork: JByteArray, artwork_mime: JString, duration_ms: jlong, position_ms: jlong,
+) {
+    let Some(s) = get(h) else { return };
+    let opt = |env: &mut JNIEnv, js: &JString| if js.is_null() { String::new() } else { string(env, js) };
+    let m = crate::metadata::Metadata {
+        title: opt(&mut env, &title),
+        artist: opt(&mut env, &artist),
+        album: opt(&mut env, &album),
+        artwork: if artwork.is_null() { None } else { env.convert_byte_array(&artwork).ok() },
+        artwork_mime: opt(&mut env, &artwork_mime),
+        duration_ms: duration_ms.max(0) as u64,
+        position_ms: position_ms.max(0) as u64,
+    };
+    guard((), || s.set_metadata(&m));
 }

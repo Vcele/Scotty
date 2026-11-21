@@ -9,11 +9,17 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import app.scotty.cast.CastController
 import app.scotty.cast.CastService
 import app.scotty.cast.CastTarget
-import app.scotty.ui.ScottyTheme
+import app.scotty.system.Beam
+import app.scotty.system.Diagnostics
 import app.scotty.ui.HomeScreen
+import app.scotty.ui.MicRationaleDialog
+import app.scotty.ui.ScottyTheme
 
 class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
@@ -26,12 +32,18 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         vm.startDiscovery()
-        pendingAfterPermission?.let { pendingAfterPermission = null; requestProjection(it) }
+    }
+
+    private val micLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val t = pendingAfterPermission
+        pendingAfterPermission = null
+        if (granted && t != null) requestProjection(t)
     }
     private var pendingAfterPermission: CastTarget? = null
+    private var micRationaleFor by mutableStateOf<CastTarget?>(null)
 
+    /** Discovery needs these up front; the microphone permission is asked for when casting. */
     private val permissions = buildList {
-        add(Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= 33) {
             add(Manifest.permission.NEARBY_WIFI_DEVICES)
             add(Manifest.permission.POST_NOTIFICATIONS)
@@ -49,7 +61,18 @@ class MainActivity : ComponentActivity() {
                     vm = vm,
                     onCast = ::cast,
                     onStop = { CastService.stop(this) },
+                    onDiagnostics = { Diagnostics.share(this) },
                 )
+                micRationaleFor?.let { target ->
+                    MicRationaleDialog(
+                        onContinue = {
+                            micRationaleFor = null
+                            pendingAfterPermission = target
+                            micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        },
+                        onCancel = { micRationaleFor = null },
+                    )
+                }
             }
         }
     }
@@ -67,8 +90,7 @@ class MainActivity : ComponentActivity() {
 
     private fun cast(target: CastTarget) {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            pendingAfterPermission = target
-            permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+            micRationaleFor = target
             return
         }
         requestProjection(target)
@@ -76,6 +98,6 @@ class MainActivity : ComponentActivity() {
 
     private fun requestProjection(target: CastTarget) {
         CastController.pendingTarget = target
-        projectionLauncher.launch(app.scotty.system.Beam.projectionIntent(this))
+        projectionLauncher.launch(Beam.projectionIntent(this))
     }
 }

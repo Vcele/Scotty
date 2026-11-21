@@ -63,6 +63,7 @@ class BeamActivity : ComponentActivity() {
     private lateinit var discovery: AirPlayDiscovery
     private var pending: CastTarget? = null
     private var awaitingStart by androidx.compose.runtime.mutableStateOf(false)
+    private var micRationaleFor by androidx.compose.runtime.mutableStateOf<CastTarget?>(null)
 
     private val projection = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
         val data = res.data
@@ -74,8 +75,8 @@ class BeamActivity : ComponentActivity() {
         }
     }
 
-    private val micPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
-        pending?.let { beam(it) }
+    private val micPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        pending?.takeIf { granted }?.let { beam(it) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -108,8 +109,7 @@ class BeamActivity : ComponentActivity() {
 
     private fun beam(t: CastTarget) {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            pending = t
-            micPermission.launch(Manifest.permission.RECORD_AUDIO)
+            micRationaleFor = t
             return
         }
         pending = null
@@ -132,6 +132,16 @@ class BeamActivity : ComponentActivity() {
             }
         }
 
+        micRationaleFor?.let { t ->
+            app.scotty.ui.MicRationaleDialog(
+                onContinue = {
+                    micRationaleFor = null
+                    pending = t
+                    micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                },
+                onCancel = { micRationaleFor = null },
+            )
+        }
         active?.takeIf { it.pinRequested }?.let { s ->
             PinDialog(s.target.name, onSubmit = CastController::submitPin, onCancel = { CastService.stop(this) })
         }
@@ -156,6 +166,7 @@ class BeamActivity : ComponentActivity() {
                     val sub = when {
                         selected && active != null && !active.live && !active.error -> active.status
                         selected && active?.error == true -> active.status
+                        selected && active?.warning != null -> active.warning
                         else -> null
                     }
                     Row(
@@ -165,7 +176,7 @@ class BeamActivity : ComponentActivity() {
                             .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent),
                     ) {
                         Entry(if (d.isSpeaker) Icons.Rounded.Speaker else Icons.Rounded.Tv, d.name, sub, selected) {
-                            if (!selected) beam(CastTarget.AirPlayAudio(d.name, d.host, d.raopPort!!, if (d.prefersAirPlay2) 2 else 0))
+                            if (!selected) beam(CastTarget.AirPlayAudio(d.name, d.host, d.raopPort ?: d.ap2Port, if (d.prefersAirPlay2) 2 else 0, d.ap2Port))
                         }
                     }
                 }

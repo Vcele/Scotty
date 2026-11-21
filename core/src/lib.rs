@@ -14,6 +14,7 @@ pub mod airplay_audio;
 pub mod airplay_video;
 pub mod ap2;
 pub mod hap;
+pub mod metadata;
 pub mod netutil;
 pub mod rtp_audio;
 pub mod events;

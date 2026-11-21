@@ -10,7 +10,7 @@ use crate::hap::pairing::{self, control_keys, event_keys, Credentials, PairError
 use crate::hap::random;
 use crate::netutil::tune_tcp;
 use crate::raop::volume_db;
-use crate::rtp_audio::{Destination, RtpAudio, FRAMES, LATENCY, RATE};
+use crate::rtp_audio::{Destination, RtpAudio, FRAMES, RATE};
 use crate::rtsp::{read_response, Message};
 use crate::session::Session;
 use crate::util::rand_u64;
@@ -83,7 +83,11 @@ impl SecureClient {
         let mut msg = head.into_bytes();
         msg.extend_from_slice(body.1);
         self.w.send(&msg)?;
-        Message::read(&mut self.r)?.ok_or_else(|| io::Error::other("Receiver closed the connection"))
+        let m = Message::read(&mut self.r)?.ok_or_else(|| io::Error::other("Receiver closed the connection"))?;
+        if uri != "/feedback" {
+            log::info!("{method} {uri} → {}", m.status());
+        }
+        Ok(m)
     }
 }
 
@@ -172,23 +176,23 @@ impl Ap2Session {
         events.status("Pairing…");
         let secret = pair(&tcp, "RTSP/1.0", creds.as_ref(), &events, &pin_rx, true)?;
 
-        let key: [u8; 32] = random();
         let s = Arc::new(Self {
             events,
             stopped: AtomicBool::new(false),
-            audio: RtpAudio::new(Some(key))?,
+            audio: RtpAudio::new(Some(audio_key(&secret)))?,
             client: Mutex::new(None),
             url: format!("rtsp://{local}/{}", rand_u64() % 9_000_000_000 + 1_000_000_000),
             stream: Mutex::new(Some(tcp.try_clone()?)),
             volume: Mutex::new(volume),
         });
-        s.setup(&tcp, addr.ip(), &secret, key)?;
+        s.setup(&tcp, addr.ip(), &secret)?;
         let me = s.clone();
         thread::Builder::new().name("ap2-feedback".into()).spawn(move || me.feedback_loop())?;
         Ok(s)
     }
 
-    fn setup(&self, tcp: &TcpStream, remote: IpAddr, secret: &[u8], key: [u8; 32]) -> io::Result<()> {
+    /// Mirrors OwnTones' proven sequence: SETUP (session) → RECORD → SETUP (stream) → volume.
+    fn setup(&self, tcp: &TcpStream, remote: IpAddr, secret: &[u8]) -> io::Result<()> {
         let mut c = SecureClient::new(tcp, secret, "RTSP/1.0")?;
         let mac: [u8; 6] = {
             let mut m: [u8; 6] = random();
@@ -196,37 +200,23 @@ impl Ap2Session {
             m
         };
         let mac_str = mac.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":");
-        let session_uuid = pairing::uuid();
         let dacp = format!("{:016X}", rand_u64());
         c.headers = vec![
-            ("X-Apple-ProtocolVersion".into(), "1".into()),
-            ("X-Apple-Device-ID".into(), format!("0x{}", mac_str.replace(':', "").to_lowercase())),
-            ("X-Apple-Session-ID".into(), session_uuid.clone()),
-            ("DACP-ID".into(), dacp.clone()),
-            ("Client-Instance".into(), dacp),
-            ("Active-Remote".into(), (rand_u64() as u32 & 0x7FFF_FFFF).to_string()),
+            ("X-Apple-Client-Name".into(), "Scotty".into()),
+            ("Client-Instance".into(), dacp.clone()),
+            ("DACP-ID".into(), dacp),
+            ("Active-Remote".into(), (rand_u64() as u32).to_string()),
         ];
 
-        // SETUP 1: session, timing → event port. SCOTTY_AP2_TIMING=PTP is a test hook for receivers
-        // that only speak PTP (shairport-sync); it skips the NTP timing that Android needs.
+        // SETUP (session). SCOTTY_AP2_TIMING=PTP is a test hook for PTP-only receivers
+        // (shairport-sync); Android itself can't do PTP, so real sessions use NTP.
         let ptp = std::env::var("SCOTTY_AP2_TIMING").is_ok_and(|v| v == "PTP");
         let local_ip = tcp.local_addr()?.ip().to_string();
         let mut fields = vec![
-            ("deviceID", Value::String(mac_str.clone())),
-            ("macAddress", Value::String(mac_str)),
-            ("sessionUUID", Value::String(session_uuid)),
-            ("timingProtocol", Value::String(if ptp { "PTP" } else { "NTP" }.into())),
+            ("deviceID", Value::String(mac_str)),
+            ("sessionUUID", Value::String(pairing::uuid())),
             ("timingPort", Value::Integer(self.audio.timing_port().into())),
-            ("isMultiSelectAirPlay", Value::Boolean(true)),
-            ("groupContainsGroupLeader", Value::Boolean(false)),
-            ("senderSupportsRelay", Value::Boolean(false)),
-            ("statsCollectionEnabled", Value::Boolean(false)),
-            ("name", Value::String("Scotty".into())),
-            ("model", Value::String("iPhone14,3".into())),
-            ("osName", Value::String("iPhone OS".into())),
-            ("osVersion", Value::String("17.5".into())),
-            ("osBuildVersion", Value::String("21F79".into())),
-            ("sourceVersion", Value::String("690.7.1".into())),
+            ("timingProtocol", Value::String(if ptp { "PTP" } else { "NTP" }.into())),
         ];
         if ptp {
             fields.push(("timingPeerInfo", dict(vec![
@@ -236,6 +226,7 @@ impl Ap2Session {
         }
         let body = bplist(dict(fields));
         let r = c.request("SETUP", &self.url, &[], Some(("application/x-apple-binary-plist", &body)))?;
+        log::info!("SETUP session → {}", r.status());
         if r.status() != 200 {
             return Err(io::Error::other(format!("Receiver refused session setup ({})", r.status())));
         }
@@ -243,29 +234,36 @@ impl Ap2Session {
         if let Some(port) = d.get("eventPort").and_then(Value::as_unsigned_integer) {
             self.open_event_channel(SocketAddr::new(remote, port as u16), secret);
         }
+
+        let r = c.request("RECORD", &self.url, &[], None)?;
+        log::info!("RECORD → {}", r.status());
+        if r.status() != 200 {
+            return Err(io::Error::other(format!("Receiver refused playback ({})", r.status())));
+        }
         if ptp {
             let peers = bplist(Value::Array(vec![Value::String(local_ip.clone()), Value::String(remote.to_string())]));
             let _ = c.request("SETPEERS", &self.url, &[], Some(("/peer-list-changed", &peers)));
         }
 
-        // SETUP 2: realtime ALAC stream
+        // SETUP (stream): realtime ALAC, encrypted with the pairing secret.
         let stream = dict(vec![
-            ("type", Value::Integer(96.into())),
-            ("ct", Value::Integer(2.into())), // ALAC
             ("audioFormat", Value::Integer(0x40000.into())), // ALAC 44100/16/2
             ("audioMode", Value::String("default".into())),
+            ("controlPort", Value::Integer(self.audio.control_port().into())),
+            ("ct", Value::Integer(2.into())), // ALAC
+            ("isMedia", Value::Boolean(true)),
+            ("latencyMax", Value::Integer(88200.into())),
+            ("latencyMin", Value::Integer(11025.into())),
+            ("shk", Value::Data(audio_key(secret).to_vec())),
             ("spf", Value::Integer((FRAMES as u64).into())),
             ("sr", Value::Integer(RATE.into())),
-            ("latencyMin", Value::Integer(11025.into())),
-            ("latencyMax", Value::Integer((LATENCY as u64).into())),
-            ("controlPort", Value::Integer(self.audio.control_port().into())),
-            ("shk", Value::Data(key.to_vec())),
-            ("isMedia", Value::Boolean(true)),
+            ("type", Value::Integer(96.into())),
             ("supportsDynamicStreamID", Value::Boolean(false)),
-            ("streamConnectionID", Value::Integer((rand_u64() >> 1).into())),
+            ("streamConnectionID", Value::Integer((rand_u64() as u32).into())),
         ]);
         let body = bplist(dict(vec![("streams", Value::Array(vec![stream]))]));
         let r = c.request("SETUP", &self.url, &[], Some(("application/x-apple-binary-plist", &body)))?;
+        log::info!("SETUP stream → {}", r.status());
         if r.status() != 200 {
             return Err(io::Error::other(format!("Receiver refused audio stream ({})", r.status())));
         }
@@ -279,16 +277,8 @@ impl Ap2Session {
             .unwrap_or_default();
         let data_port = s0.get("dataPort").and_then(Value::as_unsigned_integer).ok_or_else(|| io::Error::other("Receiver sent no audio port"))?;
         let control = s0.get("controlPort").and_then(Value::as_unsigned_integer).map(|p| SocketAddr::new(remote, p as u16));
+        log::info!("AirPlay 2 stream: data port {data_port}, control {control:?}");
 
-        let r = c.request(
-            "RECORD",
-            &self.url,
-            &[("Range", "npt=0-".into()), ("RTP-Info", format!("seq={};rtptime={}", self.audio.first_seq, self.audio.rtp_start))],
-            None,
-        )?;
-        if r.status() != 200 {
-            return Err(io::Error::other(format!("Receiver refused playback ({})", r.status())));
-        }
         let vol = format!("volume: {:.6}\r\n", volume_db(*self.volume.lock().unwrap()));
         let _ = c.request("SET_PARAMETER", &self.url, &[], Some(("text/parameters", vol.as_bytes())));
         self.audio.start(Destination { data: SocketAddr::new(remote, data_port as u16), control });
@@ -363,6 +353,16 @@ impl Ap2Session {
 }
 
 impl Session for Ap2Session {
+    fn set_metadata(&self, m: &crate::metadata::Metadata) {
+        let mut guard = self.client.lock().unwrap();
+        let Some(c) = guard.as_mut() else { return };
+        for (ty, body, rtptime) in crate::metadata::requests(self.audio.current_rtp(), m, true) {
+            match c.request("SET_PARAMETER", &self.url, &[("RTP-Info", format!("rtptime={rtptime}"))], Some((&ty, &body))) {
+                Ok(r) => log::info!("metadata {ty} → {}", r.status()),
+                Err(e) => log::warn!("metadata {ty}: {e}"),
+            }
+        }
+    }
     fn push_audio(&self, data: &[u8], _pts_us: i64) {
         self.audio.push_pcm(data);
     }
@@ -380,4 +380,12 @@ impl Session for Ap2Session {
     fn events(&self) -> &Events {
         &self.events
     }
+}
+
+/// Audio payload key: the first 32 bytes of the pairing secret (64 bytes after transient pairing).
+fn audio_key(secret: &[u8]) -> [u8; 32] {
+    let mut k = [0u8; 32];
+    let n = secret.len().min(32);
+    k[..n].copy_from_slice(&secret[..n]);
+    k
 }

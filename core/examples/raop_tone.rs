@@ -18,7 +18,7 @@ fn main() {
         Some("2") => Protocol::AirPlay2,
         _ => Protocol::Auto,
     };
-    let s = AirPlayAudio::start(host, port, 0.8, proto, a.get(5).cloned()).unwrap();
+    let s = AirPlayAudio::start(host, port, port, 0.8, proto, a.get(5).cloned()).unwrap();
     let start = Instant::now();
     let mut n: u64 = 0;
     while start.elapsed().as_secs_f64() < secs {

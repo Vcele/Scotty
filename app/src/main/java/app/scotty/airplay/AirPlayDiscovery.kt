@@ -25,10 +25,15 @@ data class AirPlayDevice(
 ) {
     /** Features bit 0 = video (the /play URL API). */
     val supportsVideo get() = airplayPort != null && (features and 1L) != 0L
-    val supportsAudio get() = raopPort != null
+    val supportsAudio get() = raopPort != null || (airplayPort != null && prefersAirPlay2)
     val isAppleTv get() = model?.startsWith("AppleTV") == true
-    /** Apple receivers (HomePod, Apple TV) speak AirPlay 2 natively; others get AirPlay 1 first. */
-    val prefersAirPlay2 get() = isAppleTv || model?.startsWith("AudioAccessory") == true
+    /**
+     * Feature bit 48 (SupportsCoreUtilsPairingAndEncryption) = full AirPlay 2 receiver. Many of
+     * them (Sonos, current TVs/AVRs) accept AirPlay 1 but then play nothing, so they get
+     * AirPlay 2 first. Apple devices always do.
+     */
+    val prefersAirPlay2 get() = (features and (1L shl 48)) != 0L || isAppleTv || model?.startsWith("AudioAccessory") == true
+    val ap2Port get() = airplayPort ?: raopPort ?: 7000
     val isSpeaker get() = model?.let { it.startsWith("AudioAccessory") || it.startsWith("AirPort") } == true ||
         (airplayPort == null && raopPort != null)
 }
@@ -143,6 +148,7 @@ class AirPlayDiscovery(private val ctx: Context) {
         val addr = addrs.firstOrNull { it is Inet4Address } ?: addrs.firstOrNull() ?: return
         val txt = info.attributes.mapValues { (_, v) -> v?.toString(Charsets.UTF_8) ?: "" }
         val name = displayName(info)
+        Log.i(TAG, "found \"$name\" ${info.serviceType} ${addr.hostAddress}:${info.port} txt=$txt")
         val isRaop = info.serviceType.contains("raop")
         synchronized(byName) {
             val old = byName[name] ?: AirPlayDevice(name, addr.hostAddress!!)

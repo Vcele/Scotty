@@ -7,7 +7,7 @@ A Material You app with its protocol core written in Rust.
 | Mode | Protocol | What you get |
 |---|---|---|
 | **Miracast** | Wi-Fi Display source: Wi-Fi Direct + RTSP (M1–M16) + H.264/AAC in MPEG-TS over RTP | Live screen mirroring with sound, up to 1080p30 / 720p60. No router needed. |
-| **AirPlay · Audio** | AirPlay 1 (RAOP) or AirPlay 2 (HomeKit pairing, encrypted realtime stream), chosen automatically | Everything the phone plays (Spotify, YouTube Music, podcasts…), lossless. |
+| **AirPlay · Audio** | AirPlay 2 (HomeKit pairing, encrypted realtime stream) for receivers that advertise it (HomePod, Apple TV, Sonos, current TVs/AVRs), AirPlay 1 (RAOP) otherwise, with automatic fallback | Everything the phone plays, lossless, with song info and cover art on the speaker. |
 | **AirPlay · Screen + audio** | Live HLS from the phone + AirPlay video `POST /play` (paired + encrypted for Apple TV) | Screen and sound on Apple TV / AirPlay TVs, ~3–5 s behind. |
 
 ## Feels like part of the system
@@ -19,6 +19,10 @@ A Material You app with its protocol core written in Rust.
 * **Volume keys and volume panel control the speaker** while beaming, and the phone itself stays
   silent. Optional, on by default.
 * **System media controls** show the active cast with Android's own "Other device" output chip.
+* **Song info and cover art on the speaker**: title, artist, album, artwork and progress of whatever is
+  playing are sent along, like from an iPhone. This needs "Notification access", Android's only way to
+  read other apps' now-playing info. On sideloaded installs, first enable
+  App info → ⋮ → *Allow restricted settings*.
 * **Pairing is remembered.** Apple TVs ask for an on-screen PIN once; HomePods pair silently.
 
 Android doesn't let third-party apps add entries to the system output switcher for other apps'
@@ -53,6 +57,8 @@ through a small event queue (`status`, `live`, `mode`, `idr`, `pin`, `creds`, `e
   TCP keep-alive is on, and a low-latency Wi-Fi lock is held.
 * **Auto-reconnect**: a live AirPlay session that drops is re-established up to 3 times, and
   capture keeps running.
+* **Diagnostics**: the bug icon in the app shares a log of protocol exchanges, receiver capabilities
+  and audio statistics. Pairing secrets are redacted.
 
 ## Build & install
 
@@ -99,4 +105,7 @@ capture, phone mute, volume keys, tile and picker.
   for AirPlay 2 streams (the approach OwnTones uses with HomePods). shairport-sync's AirPlay 2
   mode only supports PTP and can't be used as an end-to-end AirPlay 2 audio test.
 * **AirPlay screen** uses HLS because real-time mirroring requires Apple's FairPlay.
-* Apps that opt out of audio capture stay silent. Spotify works.
+* **Apps can block audio capture** (`allowAudioPlaybackCapture`). Scotty then receives silence. It
+  detects this, names the app, and lets the phone play normally instead of muting it.
+* Many AirPlay 2 receivers (e.g. Sonos) accept an AirPlay 1 connection and then play nothing. Scotty
+  reads the receiver's feature flags (bit 48) and goes to AirPlay 2 directly, as OwnTones does.

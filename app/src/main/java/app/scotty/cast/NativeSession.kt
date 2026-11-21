@@ -36,6 +36,12 @@ open class NativeSession(
     private var wasLive = false
     private var retries = 0
     private val io = Executors.newSingleThreadExecutor()
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    private val audioManager = ctx.getSystemService(android.media.AudioManager::class.java)
+    private var nowPlaying: app.scotty.system.NowPlaying? = null
+    @Volatile private var lastLoudMs = 0L
+    @Volatile private var captureWarning = false
+    private var lastTrackKey: String? = null
 
     /** Runs on the session thread before events are processed; throw to fail the session. */
     protected open fun prepare() {}
@@ -55,8 +61,11 @@ open class NativeSession(
                 fail(e.message ?: e.javaClass.simpleName)
                 return@thread
             }
+            if (rawPcm) main.post { startNowPlaying() }
             while (!stopped) {
-                val ev = ScottyCore.pollEvent(handle, 500) ?: continue
+                val ev = ScottyCore.pollEvent(handle, 500)
+                if (rawPcm && wasLive) checkCapture()
+                if (ev == null) continue
                 if (!handleEvent(ev.split('\t'))) break
             }
         }
@@ -128,11 +137,68 @@ open class NativeSession(
     }
 
     private fun startPcm() {
-        capture = AudioCapture(projection, 44_100, 352) { pcm, pts -> ScottyCore.pushAudio(handle, pcm, pts) }
-            .also { it.start() }
+        lastLoudMs = System.currentTimeMillis()
+        capture = AudioCapture(projection, 44_100, 352) { pcm, pts ->
+            if (isAudible(pcm)) lastLoudMs = System.currentTimeMillis()
+            ScottyCore.pushAudio(handle, pcm, pts)
+        }.also { it.start() }
+    }
+
+    private fun isAudible(pcm: ByteArray): Boolean {
+        var i = 0
+        while (i + 1 < pcm.size) {
+            val s = (pcm[i].toInt() and 0xFF) or (pcm[i + 1].toInt() shl 8)
+            if (s > 64 || s < -64) return true
+            i += 8 // every 2nd stereo frame is plenty
+        }
+        return false
+    }
+
+    /**
+     * Apps can forbid capturing their audio. Android then hands us pure silence while the app
+     * keeps playing on the phone. Detect that, explain it, and let the phone speaker play again.
+     */
+    private fun checkCapture() {
+        val silentFor = System.currentTimeMillis() - lastLoudMs
+        val musicPlaying = audioManager.isMusicActive
+        if (!captureWarning && silentFor > 5000 && musicPlaying) {
+            captureWarning = true
+            val blocked = runCatching {
+                audioManager.activePlaybackConfigurations.any {
+                    it.audioAttributes.allowedCapturePolicy != android.media.AudioAttributes.ALLOW_CAPTURE_BY_ALL
+                }
+            }.getOrDefault(false)
+            val app = nowPlaying?.currentPackage?.let { pkg ->
+                runCatching { ctx.packageManager.getApplicationLabel(ctx.packageManager.getApplicationInfo(pkg, 0)).toString() }.getOrNull()
+            } ?: "The app that's playing"
+            val msg = if (blocked) " doesn't allow other apps to capture its audio, so it keeps playing on this phone."
+            else "No sound is reaching Scotty from . Try pausing and resuming playback."
+            Log.w(TAG, "capture silent for ms while music active (policy blocked=, app=)")
+            CastController.warn(msg)
+            CastController.captureBlockedListener?.invoke(true)
+        } else if (captureWarning && silentFor < 1000) {
+            captureWarning = false
+            Log.i(TAG, "capture audible again")
+            CastController.warn(null)
+            CastController.captureBlockedListener?.invoke(false)
+        }
+    }
+
+    private fun startNowPlaying() {
+        if (stopped) return
+        nowPlaying = app.scotty.system.NowPlaying(ctx) { t ->
+            // Re-send on track change, and on play/pause/seek so progress stays right.
+            lastTrackKey = t.key
+            io.execute {
+                if (handle >= 0 && !stopped) {
+                    ScottyCore.setMetadata(handle, t.title, t.artist, t.album, t.artworkJpeg, "image/jpeg", t.durationMs, t.positionMs)
+                }
+            }
+        }.also { if (!it.start()) Log.i(TAG, "no notification access – song info won't be shown on the speaker") }
     }
 
     private fun releaseMedia() {
+        main.post { nowPlaying?.stop(); nowPlaying = null }
         capture?.stop(); capture = null
         aac?.release(); aac = null
         encoder?.stop(); encoder = null
@@ -170,7 +236,7 @@ open class NativeSession(
 class AirPlayAudioSession(ctx: Context, projection: MediaProjection, target: CastTarget.AirPlayAudio, onEnded: (String?) -> Unit) :
     NativeSession(ctx, projection, 0, rawPcm = true, reconnect = true, credentialKey = target.name, onEnded = onEnded,
         starter = {
-            ScottyCore.airplayAudioStart(target.host, target.port, Prefs.volume(ctx), target.protocol, Prefs.credentials(ctx, target.name))
+            ScottyCore.airplayAudioStart(target.host, target.port, target.ap2Port, Prefs.volume(ctx), target.protocol, Prefs.credentials(ctx, target.name))
         })
 
 class AirPlayScreenSession(ctx: Context, projection: MediaProjection, dpi: Int, target: CastTarget.AirPlayScreen, onEnded: (String?) -> Unit) :
