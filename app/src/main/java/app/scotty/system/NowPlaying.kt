@@ -73,6 +73,13 @@ class NowPlaying(private val ctx: Context, private val onChange: (Track) -> Unit
     /** The package currently playing (for diagnostics), if known. */
     val currentPackage: String? get() = controller?.packageName
 
+    val isPlaying get() = controller?.playbackState?.state == PlaybackState.STATE_PLAYING
+
+    /** Pauses the playing app; returns false if no controllable player is known. */
+    fun pause(): Boolean = controller?.let { runCatching { it.transportControls.pause() }.isSuccess } ?: false
+
+    fun play(): Boolean = controller?.let { runCatching { it.transportControls.play() }.isSuccess } ?: false
+
     private fun pick(list: List<MediaController>?) {
         val sessions = list ?: runCatching { msm.getActiveSessions(component) }.getOrNull() ?: return
         val best = sessions

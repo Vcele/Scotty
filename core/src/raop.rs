@@ -152,16 +152,27 @@ impl RaopSession {
         Ok(())
     }
 
+    /// OPTIONS every 10 s. One unanswered request is tolerated (Wi-Fi hiccup); two in a row mean the
+    /// receiver is gone, so the session ends with an error and the app can pause playback.
     fn keepalive(&self) {
         let mut ticks = 0;
+        let mut misses = 0;
         while !self.stopped.load(Ordering::SeqCst) {
             thread::sleep(Duration::from_secs(1));
             ticks += 1;
-            if ticks % 15 == 0 {
+            if ticks % 10 == 0 {
                 let c = self.control.lock().unwrap().as_ref().map(|c| (c.conn.clone(), c.session.clone()));
                 if let Some((conn, session)) = c {
                     let h: Vec<(&str, String)> = session.map(|s| ("Session", s)).into_iter().collect();
-                    let _ = conn.request("OPTIONS", "*", &h, None, Duration::from_secs(5));
+                    if conn.request("OPTIONS", "*", &h, None, Duration::from_secs(5)).is_ok() {
+                        misses = 0;
+                    } else {
+                        misses += 1;
+                        if misses >= 2 && !self.stopped.load(Ordering::SeqCst) {
+                            self.finish(Some("Lost connection to the receiver".into()));
+                            break;
+                        }
+                    }
                 }
             }
         }

@@ -80,6 +80,7 @@ open class NativeSession(
             "live" -> {
                 wasLive = true
                 retries = 0
+                resumeAfterReconnect()
                 CastController.status(e.getOrElse(1) { "" }, live = true)
             }
             "idr" -> encoder?.requestKeyFrame()
@@ -96,9 +97,15 @@ open class NativeSession(
                 val err = e.getOrNull(1)?.takeIf { it.isNotEmpty() }
                 if (stopped) return false
                 ScottyCore.stop(handle)
+                // Connection lost while music was beaming: pause the player first, so nothing ever
+                // switches back to the phone speaker at full volume.
+                if (err != null && wasLive && rawPcm) pauseForDrop()
                 if (err != null && reconnect && wasLive && retries < MAX_RETRIES) {
                     retries++
-                    CastController.status("Connection lost – reconnecting ($retries/$MAX_RETRIES)…")
+                    CastController.status(
+                        if (pausedByUs) "Connection lost – playback paused, reconnecting ($retries/$MAX_RETRIES)…"
+                        else "Connection lost – reconnecting ($retries/$MAX_RETRIES)…",
+                    )
                     Thread.sleep(1500L * retries)
                     if (stopped) return false
                     val h = starter()
@@ -110,11 +117,39 @@ open class NativeSession(
                 }
                 releaseMedia()
                 stopped = true
-                onEnded(err)
+                onEnded(if (err != null && pausedByUs) "Lost connection to the speaker – playback paused" else err)
                 return false
             }
         }
         return true
+    }
+
+
+    @Volatile private var pausedByUs = false
+
+    /** Pauses whatever is playing (media session first, media key as fallback). */
+    private fun pauseForDrop() {
+        if (pausedByUs) return
+        val np = nowPlaying
+        val playing = np?.isPlaying ?: audioManager.isMusicActive
+        if (!playing) return
+        if (np?.pause() != true) mediaKey(android.view.KeyEvent.KEYCODE_MEDIA_PAUSE)
+        pausedByUs = true
+        Log.i(TAG, "connection lost – paused playback")
+        Thread.sleep(400) // let the player stop before audio routing changes
+    }
+
+    private fun resumeAfterReconnect() {
+        if (!pausedByUs) return
+        pausedByUs = false
+        if (nowPlaying?.play() != true) mediaKey(android.view.KeyEvent.KEYCODE_MEDIA_PLAY)
+        Log.i(TAG, "reconnected – resumed playback")
+    }
+
+    private fun mediaKey(code: Int) {
+        val t = android.os.SystemClock.uptimeMillis()
+        audioManager.dispatchMediaKeyEvent(android.view.KeyEvent(t, t, android.view.KeyEvent.ACTION_DOWN, code, 0))
+        audioManager.dispatchMediaKeyEvent(android.view.KeyEvent(t, t, android.view.KeyEvent.ACTION_UP, code, 0))
     }
 
     private fun startMedia(w: Int, h: Int, fps: Int, bitrate: Int, level: Int, audio: Boolean) {

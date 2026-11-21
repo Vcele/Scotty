@@ -40,12 +40,7 @@ class ScottyShellService(private val given: Context?) : IScottyShell.Stub() {
     @Synchronized
     override fun startCapture(sampleRate: Int): ParcelFileDescriptor {
         stopCapture()
-        val rec = openSubmix(sampleRate)
-        rec.startRecording()
-        if (rec.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-            rec.release()
-            throw IllegalStateException("REMOTE_SUBMIX recording didn't start (state ${rec.recordingState})")
-        }
+        val rec = openSubmix(sampleRate) // already recording and verified to deliver data
         val (readSide, writeSide) = ParcelFileDescriptor.createPipe()
         capturing = true
         captureThread = thread(name = "submix", priority = Thread.MAX_PRIORITY) {
@@ -86,15 +81,37 @@ class ScottyShellService(private val given: Context?) : IScottyShell.Stub() {
         val bufferBytes = maxOf(min, rate * 4 / 2)
         val errors = mutableListOf<String>()
 
+        // Opening isn't enough: some devices accept a strategy but then never deliver audio. Each one
+        // must start recording and produce data (silence counts) within 1.5 s.
         fun attempt(name: String, make: () -> AudioRecord): AudioRecord? = try {
             val r = make()
-            if (r.state == AudioRecord.STATE_INITIALIZED) {
-                Log.i(TAG, "REMOTE_SUBMIX opened via $name")
-                r
-            } else {
-                r.release()
-                errors += "$name: not initialized"
-                null
+            when {
+                r.state != AudioRecord.STATE_INITIALIZED -> {
+                    r.release()
+                    errors += "$name: not initialized"
+                    null
+                }
+                else -> {
+                    r.startRecording()
+                    val probe = ByteArray(4096)
+                    var got = 0
+                    val deadline = System.currentTimeMillis() + 1500
+                    while (got == 0 && System.currentTimeMillis() < deadline) {
+                        val n = r.read(probe, 0, probe.size, AudioRecord.READ_NON_BLOCKING)
+                        if (n < 0) break
+                        got += n
+                        if (n == 0) Thread.sleep(20)
+                    }
+                    if (r.recordingState == AudioRecord.RECORDSTATE_RECORDING && got > 0) {
+                        Log.i(TAG, "REMOTE_SUBMIX capturing via $name")
+                        r
+                    } else {
+                        runCatching { r.stop() }
+                        r.release()
+                        errors += "$name: no audio data (state ${r.recordingState})"
+                        null
+                    }
+                }
             }
         } catch (e: Throwable) {
             errors += "$name: ${e.javaClass.simpleName}: ${e.message}"

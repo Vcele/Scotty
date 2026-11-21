@@ -25,7 +25,10 @@ pub fn udp(tos: u32, read_timeout: Option<Duration>) -> io::Result<UdpSocket> {
 pub fn tune_tcp(s: &std::net::TcpStream) {
     let _ = s.set_nodelay(true);
     let sock = socket2::SockRef::from(s);
-    let ka = socket2::TcpKeepalive::new().with_time(Duration::from_secs(10)).with_interval(Duration::from_secs(5));
+    let ka = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(10))
+        .with_interval(Duration::from_secs(5))
+        .with_retries(3); // a vanished receiver is noticed after ~25 s instead of minutes
     let _ = sock.set_tcp_keepalive(&ka);
     let _ = sock.set_tos(TOS_VOICE);
 }
