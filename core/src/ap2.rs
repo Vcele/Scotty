@@ -158,6 +158,7 @@ pub struct Ap2Session {
     url: String,
     stream: Mutex<Option<TcpStream>>,
     volume: Mutex<f32>,
+    meta_sent: Mutex<crate::metadata::Sent>,
 }
 
 impl Ap2Session {
@@ -184,6 +185,7 @@ impl Ap2Session {
             url: format!("rtsp://{local}/{}", rand_u64() % 9_000_000_000 + 1_000_000_000),
             stream: Mutex::new(Some(tcp.try_clone()?)),
             volume: Mutex::new(volume),
+            meta_sent: Mutex::default(),
         });
         s.setup(&tcp, addr.ip(), &secret)?;
         let me = s.clone();
@@ -356,7 +358,7 @@ impl Session for Ap2Session {
     fn set_metadata(&self, m: &crate::metadata::Metadata) {
         let mut guard = self.client.lock().unwrap();
         let Some(c) = guard.as_mut() else { return };
-        for (ty, body, rtptime) in crate::metadata::requests(self.audio.current_rtp(), m, true) {
+        for (ty, body, rtptime) in crate::metadata::requests(self.audio.current_rtp(), m, &mut self.meta_sent.lock().unwrap()) {
             match c.request("SET_PARAMETER", &self.url, &[("RTP-Info", format!("rtptime={rtptime}"))], Some((&ty, &body))) {
                 Ok(r) => log::info!("metadata {ty} → {}", r.status()),
                 Err(e) => log::warn!("metadata {ty}: {e}"),

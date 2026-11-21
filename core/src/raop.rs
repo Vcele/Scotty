@@ -52,6 +52,7 @@ pub struct RaopSession {
     audio: Arc<RtpAudio>,
     control: Mutex<Option<Control>>,
     volume: Mutex<f32>,
+    meta_sent: Mutex<crate::metadata::Sent>,
 }
 
 impl RaopSession {
@@ -63,6 +64,7 @@ impl RaopSession {
             audio: RtpAudio::new(None)?,
             control: Mutex::new(None),
             volume: Mutex::new(volume),
+            meta_sent: Mutex::default(),
         });
         s.handshake(host, port)?;
         let me = s.clone();
@@ -201,7 +203,7 @@ impl Session for RaopSession {
     fn set_metadata(&self, m: &crate::metadata::Metadata) {
         let c = self.control.lock().unwrap().as_ref().map(|c| (c.conn.clone(), c.url.clone(), c.session.clone()));
         let Some((conn, url, session)) = c else { return };
-        for (ty, body, rtptime) in crate::metadata::requests(self.audio.current_rtp(), m, true) {
+        for (ty, body, rtptime) in crate::metadata::requests(self.audio.current_rtp(), m, &mut self.meta_sent.lock().unwrap()) {
             let mut h: Vec<(&str, String)> = vec![("RTP-Info", format!("rtptime={rtptime}"))];
             if let Some(s) = &session {
                 h.push(("Session", s.clone()));

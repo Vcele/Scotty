@@ -42,6 +42,9 @@ open class NativeSession(
     @Volatile private var lastLoudMs = 0L
     @Volatile private var captureWarning = false
     private var lastTrackKey: String? = null
+    private var lastPlaying: Boolean? = null
+    private var lastAnchor = 0L
+    private val pendingVolume = java.util.concurrent.atomic.AtomicReference<Float?>(null)
 
     /** Runs on the session thread before events are processed; throw to fail the session. */
     protected open fun prepare() {}
@@ -222,11 +225,19 @@ open class NativeSession(
     private fun startNowPlaying() {
         if (stopped) return
         nowPlaying = app.scotty.system.NowPlaying(ctx) { t ->
-            // Re-send on track change, and on play/pause/seek so progress stays right.
+            // Players report position many times a second. Only forward a new track (with its cover)
+            // or a play/pause/seek – receivers reset their display on every text update.
+            val anchor = android.os.SystemClock.elapsedRealtime() - t.positionMs
+            val newTrack = t.key != lastTrackKey
+            val jumped = t.playing != lastPlaying || kotlin.math.abs(anchor - lastAnchor) > 2000
+            if (!newTrack && !jumped) return@NowPlaying
             lastTrackKey = t.key
+            lastPlaying = t.playing
+            lastAnchor = anchor
+            val art = if (newTrack) t.artworkJpeg else null
             io.execute {
                 if (handle >= 0 && !stopped) {
-                    ScottyCore.setMetadata(handle, t.title, t.artist, t.album, t.artworkJpeg, "image/jpeg", t.durationMs, t.positionMs)
+                    ScottyCore.setMetadata(handle, t.title, t.artist, t.album, art, "image/jpeg", t.durationMs, t.positionMs)
                 }
             }
         }.also { if (!it.start()) Log.i(TAG, "no notification access – song info won't be shown on the speaker") }
@@ -246,8 +257,13 @@ open class NativeSession(
         onEnded(msg)
     }
 
+    /** Slider drags produce dozens of values a second; only the latest is sent. */
     override fun setVolume(volume: Float) {
-        io.execute { if (handle >= 0 && !stopped) ScottyCore.setVolume(handle, volume) }
+        if (pendingVolume.getAndSet(volume) != null) return
+        io.execute {
+            val v = pendingVolume.getAndSet(null) ?: return@execute
+            if (handle >= 0 && !stopped) ScottyCore.setVolume(handle, v)
+        }
     }
 
     override fun submitPin(pin: String) {

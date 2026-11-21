@@ -118,12 +118,12 @@ class NowPlaying(private val ctx: Context, private val onChange: (Track) -> Unit
     }
 
     private fun jpeg(b: Bitmap): ByteArray? = runCatching {
-        val max = 600
+        val max = 500
         val scaled = if (b.width > max || b.height > max) {
             val s = max.toFloat() / maxOf(b.width, b.height)
             Bitmap.createScaledBitmap(b, (b.width * s).toInt().coerceAtLeast(1), (b.height * s).toInt().coerceAtLeast(1), true)
         } else b
-        ByteArrayOutputStream().also { scaled.compress(Bitmap.CompressFormat.JPEG, 85, it) }.toByteArray()
+        ByteArrayOutputStream().also { scaled.compress(Bitmap.CompressFormat.JPEG, 80, it) }.toByteArray()
     }.getOrNull()
 
     companion object {

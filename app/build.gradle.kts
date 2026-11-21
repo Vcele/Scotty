@@ -15,8 +15,8 @@ android {
         applicationId = "app.scotty"
         minSdk = 30
         targetSdk = 36
-        versionCode = (System.getenv("SCOTTY_VERSION_CODE")?.toIntOrNull() ?: 6)
-        versionName = (System.getenv("SCOTTY_VERSION") ?: "0.4.1")
+        versionCode = (System.getenv("SCOTTY_VERSION_CODE")?.toIntOrNull() ?: 7)
+        versionName = (System.getenv("SCOTTY_VERSION") ?: "0.4.2")
     }
 
     // Release signing comes from the environment (CI secrets or a local keystore); without it the
