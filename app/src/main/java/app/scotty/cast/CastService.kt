@@ -30,6 +30,8 @@ import app.scotty.MainActivity
 import app.scotty.R
 import app.scotty.miracast.MiracastSession
 import app.scotty.system.BeamTileService
+import app.scotty.shell.PowerMode
+import kotlin.concurrent.thread
 import kotlin.math.roundToInt
 
 /**
@@ -45,6 +47,7 @@ class CastService : Service() {
     private var volumeProvider: VolumeProvider? = null
     private var mutedMusicVolume: Int? = null
     private var volumeReceiver: BroadcastReceiver? = null
+    private var submixReceiver: BroadcastReceiver? = null
     private val main = Handler(Looper.getMainLooper())
     private val audio by lazy { getSystemService(AudioManager::class.java) }
 
@@ -59,36 +62,45 @@ class CastService : Service() {
         @Suppress("DEPRECATION")
         val data = intent?.getParcelableExtra<Intent>(EXTRA_DATA)
         val code = intent?.getIntExtra(EXTRA_CODE, 0) ?: 0
-        if (target == null || data == null) {
+        // Power mode: AirPlay audio captured by the Shizuku shell helper needs no MediaProjection.
+        val direct = intent?.action == ACTION_DIRECT && target is CastTarget.AirPlayAudio
+        if (target == null || (data == null && !direct)) {
             stopSelf()
             return START_NOT_STICKY
         }
         CastController.pendingTarget = null
-        startForeground(NOTIFICATION_ID, buildNotification(target), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        startForeground(
+            NOTIFICATION_ID, buildNotification(target),
+            if (direct) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK else ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
+        )
 
         CastController.session?.stop()
         CastController.session = null
         teardownSystemHooks()
         projection?.stop()
+        projection = null
 
-        val mpm = getSystemService(MediaProjectionManager::class.java)
-        val proj = mpm.getMediaProjection(code, data) ?: run { release(keepState = false); return START_NOT_STICKY }
-        projection = proj
-        proj.registerCallback(object : MediaProjection.Callback() {
-            override fun onStop() {
-                Log.i(TAG, "projection stopped by system")
-                if (projection === proj) shutdown()
-            }
-        }, main)
+        val proj = if (direct) null else {
+            val mpm = getSystemService(MediaProjectionManager::class.java)
+            val p = mpm.getMediaProjection(code, data!!) ?: run { release(keepState = false); return START_NOT_STICKY }
+            projection = p
+            p.registerCallback(object : MediaProjection.Callback() {
+                override fun onStop() {
+                    Log.i(TAG, "projection stopped by system")
+                    if (projection === p) shutdown()
+                }
+            }, main)
+            p
+        }
 
         acquireLocks()
         Prefs.setLastTarget(this, target)
         val volume = Prefs.volume(this)
         CastController.begin(target, volume)
         val session = when (target) {
-            is CastTarget.Miracast -> MiracastSession(this, proj, target, ::onSessionEnded)
+            is CastTarget.Miracast -> MiracastSession(this, proj!!, target, ::onSessionEnded)
             is CastTarget.AirPlayAudio -> AirPlayAudioSession(this, proj, target, ::onSessionEnded)
-            is CastTarget.AirPlayScreen -> AirPlayScreenSession(this, proj, resources.displayMetrics.densityDpi, target, ::onSessionEnded)
+            is CastTarget.AirPlayScreen -> AirPlayScreenSession(this, proj!!, resources.displayMetrics.densityDpi, target, ::onSessionEnded)
         }
         CastController.session = session
         setupSystemHooks(target, volume)
@@ -133,8 +145,15 @@ class CastService : Service() {
         mediaSession = ms
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(target))
 
-        if (hasRemoteVolume && Prefs.muteLocal(this)) muteLocalSpeaker()
         if (hasRemoteVolume) {
+            // The session reports how it captures: shell-level output capture already moves media off
+            // the phone speaker; normal playback capture needs the mute trick.
+            CastController.routingListener = { shellCapture ->
+                main.post {
+                    if (CastController.session == null) return@post
+                    if (shellCapture) useSubmixVolume() else if (Prefs.muteLocal(this)) muteLocalSpeaker()
+                }
+            }
             // If the playing app blocks capture, give the phone its sound back instead of silence.
             CastController.captureBlockedListener = { blocked ->
                 main.post {
@@ -176,6 +195,52 @@ class CastService : Service() {
         ContextCompat.registerReceiver(this, rec, IntentFilter(VOLUME_CHANGED_ACTION), ContextCompat.RECEIVER_EXPORTED)
     }
 
+    /**
+     * Power mode: Android keeps a separate volume for the capture output, so pin it to max (full
+     * quality to the speaker) and turn volume-key presses into receiver volume changes. Only ever
+     * touches the volume after confirming media really is routed to the capture output, so the
+     * phone's own speaker volume is never changed.
+     */
+    private fun useSubmixVolume() {
+        val stream = AudioManager.STREAM_MUSIC
+        val max = audio.getStreamMaxVolume(stream).coerceAtLeast(1)
+        thread(name = "submix-volume") {
+            repeat(25) {
+                if (musicOnCaptureOutput()) {
+                    main.post { audio.setStreamVolume(stream, max, 0) }
+                    return@thread
+                }
+                Thread.sleep(200)
+            }
+            Log.w(TAG, "media never moved to the capture output; leaving volumes alone")
+        }
+        val rec = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, i: Intent) {
+                if (i.getIntExtra(EXTRA_STREAM_TYPE, -1) != stream) return
+                val value = i.getIntExtra(EXTRA_STREAM_VALUE, max)
+                val prev = i.getIntExtra(EXTRA_PREV_STREAM_VALUE, max)
+                if (value == prev || value == max) return
+                thread {
+                    if (!musicOnCaptureOutput()) return@thread // user is changing the phone's own volume
+                    main.post {
+                        val current = (CastController.state.value as? CastState.Active)?.volume ?: 0.8f
+                        CastController.setVolume(current + (value - prev).toFloat() / max)
+                        audio.setStreamVolume(stream, max, 0)
+                    }
+                }
+            }
+        }
+        submixReceiver = rec
+        ContextCompat.registerReceiver(this, rec, IntentFilter(VOLUME_CHANGED_ACTION), ContextCompat.RECEIVER_EXPORTED)
+    }
+
+    /** Asks the shell helper whether STREAM_MUSIC is currently routed to REMOTE_SUBMIX. */
+    private fun musicOnCaptureOutput(): Boolean {
+        val dump = PowerMode.exec("dumpsys audio") ?: return false
+        val section = dump.substringAfter("- STREAM_MUSIC:", "").substringBefore("\n- STREAM_")
+        return section.lineSequence().any { it.trimStart().startsWith("Devices:") && it.contains("remote_submix") }
+    }
+
     private fun unmuteLocalSpeaker() {
         volumeReceiver?.let { runCatching { unregisterReceiver(it) } }
         volumeReceiver = null
@@ -190,6 +255,9 @@ class CastService : Service() {
 
     private fun teardownSystemHooks() {
         unmuteLocalSpeaker()
+        submixReceiver?.let { runCatching { unregisterReceiver(it) } }
+        submixReceiver = null
+        CastController.routingListener = null
         CastController.captureBlockedListener = null
         CastController.volumeListener = null
         mediaSession?.release()
@@ -276,6 +344,7 @@ class CastService : Service() {
         private const val EXTRA_CODE = "code"
         private const val EXTRA_DATA = "data"
         private const val ACTION_STOP = "app.scotty.STOP"
+        private const val ACTION_DIRECT = "app.scotty.DIRECT"
         // Hidden-but-stable AudioManager broadcast used by many volume apps.
         private const val PARK_INDEX = 1
         private const val VOLUME_CHANGED_ACTION = "android.media.VOLUME_CHANGED_ACTION"
@@ -287,6 +356,11 @@ class CastService : Service() {
             ctx.startForegroundService(
                 Intent(ctx, CastService::class.java).putExtra(EXTRA_CODE, resultCode).putExtra(EXTRA_DATA, data),
             )
+        }
+
+        /** Power mode: start AirPlay audio for [CastController.pendingTarget] without MediaProjection. */
+        fun startDirect(ctx: Context) {
+            ctx.startForegroundService(Intent(ctx, CastService::class.java).setAction(ACTION_DIRECT))
         }
 
         fun stop(ctx: Context) {

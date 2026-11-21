@@ -16,6 +16,7 @@ import app.scotty.cast.CastController
 import app.scotty.cast.CastService
 import app.scotty.cast.CastTarget
 import app.scotty.system.Beam
+import app.scotty.system.tryDirect
 import app.scotty.system.Diagnostics
 import app.scotty.ui.HomeScreen
 import app.scotty.ui.MicRationaleDialog
@@ -54,6 +55,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        app.scotty.shell.PowerMode.init(this)
         enableEdgeToEdge()
         setContent {
             ScottyTheme {
@@ -89,6 +91,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun cast(target: CastTarget) {
+        if (Beam.tryDirect(this, target)) return
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             micRationaleFor = target
             return

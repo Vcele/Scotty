@@ -17,3 +17,14 @@ object Beam {
         }
     }
 }
+
+/**
+ * Power mode shortcut: AirPlay audio captured by the Shizuku shell helper needs neither the
+ * microphone permission nor the screen-capture prompt. Returns false if power mode isn't ready.
+ */
+fun Beam.tryDirect(ctx: Context, target: app.scotty.cast.CastTarget): Boolean {
+    if (target !is app.scotty.cast.CastTarget.AirPlayAudio || !app.scotty.shell.PowerMode.isReady) return false
+    app.scotty.cast.CastController.pendingTarget = target
+    app.scotty.cast.CastService.startDirect(ctx)
+    return true
+}

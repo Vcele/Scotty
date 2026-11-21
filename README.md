@@ -28,6 +28,23 @@ A Material You app with its protocol core written in Rust.
 Android doesn't let third-party apps add entries to the system output switcher for other apps'
 media, so the tile and picker are the closest equivalent.
 
+## Power mode (optional, via Shizuku)
+
+[Shizuku](https://shizuku.rikka.app/) lets an app use ADB-level (`shell`) rights. With it, Scotty:
+
+* **does a one-time permanent setup automatically**: no screen-capture prompt, runtime permissions,
+  song-info access (also on sideloaded installs blocked by "restricted settings"), and no battery
+  optimisation. These survive reboots, so they never need to be done again, even without Shizuku.
+* **while Shizuku is running**: captures the whole audio output as `shell` (the mechanism scrcpy uses).
+  Android then *moves* media to the AirPlay speaker instead of the phone speaker (no mute trick
+  needed), and **apps that block audio capture are included**. AirPlay audio needs no
+  screen-capture session at all in this mode.
+
+Without root, Shizuku has to be started again after a reboot (Wireless debugging). If it isn't
+running, Scotty falls back to normal capture, still without prompts thanks to the permanent setup.
+Verified on Waydroid (Android 13) with Shizuku 13.6: all grants persist, a capture-blocking player
+was streamed bit-exact, and the phone speaker was idle while beaming.
+
 ## Architecture
 
 ```

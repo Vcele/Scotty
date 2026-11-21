@@ -18,7 +18,7 @@ import kotlin.concurrent.thread
  */
 open class NativeSession(
     protected val ctx: Context,
-    protected val projection: MediaProjection,
+    protected val projection: MediaProjection?,
     private val dpi: Int,
     /** RAOP/AirPlay 2 audio wants raw PCM from the start instead of a `mode` event. */
     private val rawPcm: Boolean,
@@ -124,10 +124,12 @@ open class NativeSession(
             32 -> CodecProfileLevel.AVCLevel32
             else -> CodecProfileLevel.AVCLevel31
         }
+        val projection = projection ?: error("Screen capture permission missing")
         encoder = ScreenEncoder(projection, w, h, dpi, fps, bitrate, avcLevel) { data, pts, key ->
             ScottyCore.pushVideo(handle, data, pts, key)
         }.also { it.start() }
         if (audio) {
+            val projection = projection ?: return
             val enc = AacEncoder(48_000) { frame, pts -> ScottyCore.pushAudio(handle, frame, pts) }
             aac = enc
             capture = runCatching {
@@ -136,9 +138,39 @@ open class NativeSession(
         }
     }
 
+    private var shellPipe: android.os.ParcelFileDescriptor? = null
+
     private fun startPcm() {
         lastLoudMs = System.currentTimeMillis()
-        capture = AudioCapture(projection, 44_100, 352) { pcm, pts ->
+        // Power mode (Shizuku): capture the whole output as shell. Android then routes media away from
+        // the phone speaker, and apps that block normal capture are included.
+        val pipe = if (app.scotty.shell.PowerMode.isReady || projection == null) app.scotty.shell.PowerMode.startCapture(44_100) else null
+        if (pipe != null) {
+            shellPipe = pipe
+            Log.i(TAG, "using shell-level output capture")
+            CastController.routingListener?.invoke(true)
+            thread(name = "shell-pcm", priority = Thread.MAX_PRIORITY) {
+                val buf = ByteArray(352 * 4)
+                runCatching {
+                    java.io.FileInputStream(pipe.fileDescriptor).use { input ->
+                        while (!stopped) {
+                            var n = 0
+                            while (n < buf.size) {
+                                val r = input.read(buf, n, buf.size - n)
+                                if (r < 0) return@use
+                                n += r
+                            }
+                            if (isAudible(buf)) lastLoudMs = System.currentTimeMillis()
+                            ScottyCore.pushAudio(handle, buf.copyOf(), 0)
+                        }
+                    }
+                }.onFailure { Log.i(TAG, "shell capture ended: ${it.message}") }
+            }
+            return
+        }
+        val p = projection ?: error("Power mode isn't available and screen capture wasn't granted")
+        CastController.routingListener?.invoke(false)
+        capture = AudioCapture(p, 44_100, 352) { pcm, pts ->
             if (isAudible(pcm)) lastLoudMs = System.currentTimeMillis()
             ScottyCore.pushAudio(handle, pcm, pts)
         }.also { it.start() }
@@ -198,6 +230,7 @@ open class NativeSession(
     }
 
     private fun releaseMedia() {
+        shellPipe?.let { p -> shellPipe = null; app.scotty.shell.PowerMode.stopCapture(); runCatching { p.close() } }
         main.post { nowPlaying?.stop(); nowPlaying = null }
         capture?.stop(); capture = null
         aac?.release(); aac = null
@@ -233,7 +266,7 @@ open class NativeSession(
     }
 }
 
-class AirPlayAudioSession(ctx: Context, projection: MediaProjection, target: CastTarget.AirPlayAudio, onEnded: (String?) -> Unit) :
+class AirPlayAudioSession(ctx: Context, projection: MediaProjection?, target: CastTarget.AirPlayAudio, onEnded: (String?) -> Unit) :
     NativeSession(ctx, projection, 0, rawPcm = true, reconnect = true, credentialKey = target.name, onEnded = onEnded,
         starter = {
             ScottyCore.airplayAudioStart(target.host, target.port, target.ap2Port, Prefs.volume(ctx), target.protocol, Prefs.credentials(ctx, target.name))

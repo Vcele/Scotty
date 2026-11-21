@@ -81,6 +81,7 @@ class BeamActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        app.scotty.shell.PowerMode.init(this)
         discovery = AirPlayDiscovery(this)
         val direct = intent.getBooleanExtra(EXTRA_DIRECT, false)
         val last = Prefs.lastTarget(this)
@@ -108,6 +109,10 @@ class BeamActivity : ComponentActivity() {
     }
 
     private fun beam(t: CastTarget) {
+        if (Beam.tryDirect(this, t)) {
+            awaitingStart = true
+            return
+        }
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             micRationaleFor = t
             return

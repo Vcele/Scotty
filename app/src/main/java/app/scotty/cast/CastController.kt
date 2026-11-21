@@ -80,6 +80,10 @@ object Prefs {
     fun muteLocal(ctx: Context) = p(ctx).getBoolean("mute_local", true)
     fun setMuteLocal(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("mute_local", v).apply()
 
+    /** Power-mode grants (Shizuku) have been applied; they persist across reboots. */
+    fun grantsDone(ctx: Context) = p(ctx).getBoolean("grants_done", false)
+    fun setGrantsDone(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("grants_done", v).apply()
+
     /** AirPlay 2 long-term pairing per receiver name. */
     fun credentials(ctx: Context, device: String): String? = p(ctx).getString("creds:$device", null)
     fun setCredentials(ctx: Context, device: String, creds: String) = p(ctx).edit().putString("creds:$device", creds).apply()
@@ -97,6 +101,8 @@ object CastController {
     @Volatile internal var volumeListener: ((Float) -> Unit)? = null
     /** Told when captured audio turns silent although music plays (true) or recovers (false). */
     @Volatile internal var captureBlockedListener: ((Boolean) -> Unit)? = null
+    /** Told once audio capture starts: true = shell-level output capture (power mode). */
+    @Volatile internal var routingListener: ((Boolean) -> Unit)? = null
 
     val isActive get() = _state.value is CastState.Active && session != null
 

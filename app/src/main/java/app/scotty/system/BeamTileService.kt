@@ -17,7 +17,10 @@ import app.scotty.cast.Prefs
  * stop. Long-press opens the speaker picker.
  */
 class BeamTileService : TileService() {
-    override fun onStartListening() = update()
+    override fun onStartListening() {
+        app.scotty.shell.PowerMode.init(this)
+        update()
+    }
 
     override fun onClick() {
         if (CastController.isActive) {

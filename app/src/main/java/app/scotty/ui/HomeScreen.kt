@@ -197,6 +197,7 @@ fun HomeScreen(vm: MainViewModel, onCast: (CastTarget) -> Unit, onStop: () -> Un
                     }
                 }
                 if (airplayMode == 0) item { SongInfoRow() }
+                if (airplayMode == 0) item { PowerModeCard() }
                 if (airplayMode == 0) item {
                     ListItem(
                         headlineContent = { Text("Silence this phone while beaming") },
