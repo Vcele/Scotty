@@ -29,6 +29,11 @@ object Diagnostics {
                 appendLine("Silence phone while beaming: ${Prefs.muteLocal(ctx)}")
                 appendLine("Last target: ${Prefs.lastTarget(ctx)}")
                 appendLine("State: ${CastController.state.value}")
+                appendLine("Power mode: ${app.scotty.shell.PowerMode.status.value}, shell capture verified: ${app.scotty.shell.PowerMode.captureVerified}")
+                appendLine("Last now-playing sent: ${CastController.lastMetadataInfo ?: "none"}")
+                appendLine()
+                appendLine("---- Scotty core (recent, kept in memory) ----")
+                appendLine(runCatching { app.scotty.core.ScottyCore.recentLog() }.getOrElse { "unavailable: $it" })
                 appendLine()
                 appendLine("---- log ----")
                 append(

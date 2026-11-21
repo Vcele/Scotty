@@ -37,6 +37,9 @@ object ScottyCore {
     /** Next event as tab-separated text (`status`, `live`, `mode`, `idr`, `pin`, `creds`, `ended`), or null on timeout. */
     external fun pollEvent(handle: Long, timeoutMs: Int): String?
 
+    /** Scotty core's recent log lines (kept in memory, survive logcat rotation). */
+    external fun recentLog(): String
+
     /** Stops the session and frees the handle. */
     external fun stop(handle: Long)
 

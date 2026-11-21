@@ -103,6 +103,8 @@ object CastController {
     @Volatile internal var captureBlockedListener: ((Boolean) -> Unit)? = null
     /** Told once audio capture starts: true = shell-level output capture (power mode). */
     @Volatile internal var routingListener: ((Boolean) -> Unit)? = null
+    /** Last now-playing info handed to the receiver, for diagnostics. */
+    @Volatile var lastMetadataInfo: String? = null
 
     val isActive get() = _state.value is CastState.Active && session != null
 

@@ -57,7 +57,14 @@ fn start(r: std::io::Result<Arc<dyn Session>>) -> jlong {
 #[no_mangle]
 pub extern "system" fn Java_app_scotty_core_ScottyCore_init(_env: JNIEnv, _c: JClass) {
     #[cfg(target_os = "android")]
-    android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info).with_tag("ScottyCore"));
+    {
+        let inner = android_logger::AndroidLogger::new(
+            android_logger::Config::default().with_max_level(log::LevelFilter::Info).with_tag("ScottyCore"),
+        );
+        if log::set_boxed_logger(Box::new(crate::ringlog::RingLogger(inner))).is_ok() {
+            log::set_max_level(log::LevelFilter::Info);
+        }
+    }
 }
 
 #[no_mangle]
@@ -158,4 +165,10 @@ pub extern "system" fn Java_app_scotty_core_ScottyCore_setMetadata(
         position_ms: position_ms.max(0) as u64,
     };
     guard((), || s.set_metadata(&m));
+}
+
+/// Scotty's own recent log lines (survive logcat rotation), for diagnostics.
+#[no_mangle]
+pub extern "system" fn Java_app_scotty_core_ScottyCore_recentLog(env: JNIEnv, _c: JClass) -> jstring {
+    env.new_string(crate::ringlog::dump()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }

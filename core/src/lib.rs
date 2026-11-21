@@ -16,6 +16,7 @@ pub mod ap2;
 pub mod hap;
 pub mod metadata;
 pub mod netutil;
+pub mod ringlog;
 pub mod rtp_audio;
 pub mod events;
 pub mod raop;

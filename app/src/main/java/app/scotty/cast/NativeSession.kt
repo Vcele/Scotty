@@ -235,6 +235,8 @@ open class NativeSession(
             lastPlaying = t.playing
             lastAnchor = anchor
             val art = if (newTrack) t.artworkJpeg else null
+            CastController.lastMetadataInfo = "\"${t.title}\" – ${t.artist} (${t.album}), from ${t.packageName}, " +
+                "cover ${t.artworkJpeg?.size ?: 0} bytes, ${if (t.playing) "playing" else "paused"} at ${t.positionMs / 1000}s"
             io.execute {
                 if (handle >= 0 && !stopped) {
                     ScottyCore.setMetadata(handle, t.title, t.artist, t.album, art, "image/jpeg", t.durationMs, t.positionMs)
