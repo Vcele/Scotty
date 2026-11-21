@@ -29,3 +29,20 @@ pub fn tune_tcp(s: &std::net::TcpStream) {
     let _ = sock.set_tcp_keepalive(&ka);
     let _ = sock.set_tos(TOS_VOICE);
 }
+
+/// Connects with a generous timeout and one retry: receivers in network standby (AV receivers,
+/// speakers) often need a few seconds to wake up, and a just-aborted session may still be closing.
+pub fn connect_retry(addr: &SocketAddr) -> std::io::Result<std::net::TcpStream> {
+    let mut last = None;
+    for attempt in 0..2 {
+        match std::net::TcpStream::connect_timeout(addr, Duration::from_secs(10)) {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                log::warn!("connect {addr} attempt {} failed: {e}", attempt + 1);
+                last = Some(e);
+                std::thread::sleep(Duration::from_millis(1500));
+            }
+        }
+    }
+    Err(last.unwrap())
+}

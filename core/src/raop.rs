@@ -8,7 +8,7 @@ use crate::rtsp::Conn;
 use crate::session::Session;
 use crate::util::{rand_u32, rand_u64};
 use std::io;
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -72,7 +72,7 @@ impl RaopSession {
 
     fn handshake(self: &Arc<Self>, host: &str, port: u16) -> Result<(), RaopError> {
         let addr = (host, port).to_socket_addrs()?.next().ok_or_else(|| io::Error::other("Unknown receiver address"))?;
-        let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
+        let tcp = crate::netutil::connect_retry(&addr)?;
         tune_tcp(&tcp);
         let remote = addr.ip();
         let weak = Arc::downgrade(self);

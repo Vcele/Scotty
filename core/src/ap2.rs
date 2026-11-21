@@ -170,7 +170,7 @@ impl Ap2Session {
         pin_rx: Receiver<String>,
     ) -> io::Result<Arc<Self>> {
         let addr = (host, port).to_socket_addrs()?.next().ok_or_else(|| io::Error::other("Unknown receiver address"))?;
-        let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
+        let tcp = crate::netutil::connect_retry(&addr)?;
         tune_tcp(&tcp);
         let local = tcp.local_addr()?.ip();
         events.status("Pairing…");

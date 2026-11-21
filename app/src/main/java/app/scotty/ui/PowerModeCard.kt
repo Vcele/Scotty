@@ -105,6 +105,14 @@ fun PowerModeCard() {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (PowerMode.captureVerified == false) {
+                Text(
+                    "Shell audio capture isn't working on this device yet, so Scotty uses normal capture. " +
+                        "Details: ${PowerMode.captureError}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             results?.let { list ->
                 list.forEach { (label, ok) ->
                     Row(verticalAlignment = Alignment.CenterVertically) {

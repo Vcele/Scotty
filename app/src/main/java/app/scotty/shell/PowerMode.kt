@@ -54,6 +54,7 @@ object PowerMode {
             if (binder != null && binder.pingBinder()) {
                 service = IScottyShell.Stub.asInterface(binder)
                 Log.i(TAG, "shell helper connected")
+                kotlin.concurrent.thread(name = "capture-probe") { probeCapture() }
             }
             refresh()
             bindLatch.countDown()
@@ -114,6 +115,37 @@ object PowerMode {
     }
 
     val isReady get() = service != null
+
+    /** null = not probed yet; false = this device refused shell capture (see [captureError]). */
+    @Volatile var captureVerified: Boolean? = null
+        private set
+    @Volatile var captureError: String? = null
+        private set
+
+    /** Power mode may skip MediaProjection only once shell capture is known to work here. */
+    val canCaptureDirect get() = service != null && captureVerified == true
+
+    /** Opens and closes the shell capture once, so a broken device never loses the normal path. */
+    fun probeCapture() {
+        val s = service ?: return
+        runCatching {
+            s.startCapture(44_100).close()
+            s.stopCapture()
+        }.onSuccess {
+            captureVerified = true
+            captureError = null
+            Log.i(TAG, "shell capture probe ok")
+        }.onFailure {
+            markCaptureBroken(it.message ?: it.javaClass.simpleName)
+        }
+        refresh()
+    }
+
+    fun markCaptureBroken(reason: String) {
+        captureVerified = false
+        captureError = reason
+        Log.w(TAG, "shell capture unavailable: $reason")
+    }
 
     /**
      * Grants that persist across reboots, so they only ever need to be done once:

@@ -222,7 +222,7 @@ impl AirPlayScreenSession {
             .to_socket_addrs()?
             .next()
             .ok_or_else(|| io::Error::other("Unknown receiver address"))?;
-        let mut sock = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
+        let mut sock = crate::netutil::connect_retry(&addr)?;
         sock.set_read_timeout(Some(Duration::from_secs(10)))?;
         let local_ip = sock.local_addr()?.ip();
         *self.control.lock().unwrap() = Some(sock.try_clone()?);
@@ -271,7 +271,7 @@ impl AirPlayScreenSession {
     }
 
     fn run_paired(&self, addr: SocketAddr, url: &str) -> io::Result<()> {
-        let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
+        let tcp = crate::netutil::connect_retry(&addr)?;
         tune_tcp(&tcp);
         tcp.set_read_timeout(Some(Duration::from_secs(190)))?;
         *self.control.lock().unwrap() = Some(tcp.try_clone()?);

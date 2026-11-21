@@ -168,7 +168,10 @@ open class NativeSession(
             }
             return
         }
-        val p = projection ?: error("Power mode isn't available and screen capture wasn't granted")
+        val p = projection ?: run {
+            app.scotty.shell.PowerMode.markCaptureBroken("capture failed while starting a session")
+            error("Power-mode capture didn't work on this device – tap the speaker again to use normal capture")
+        }
         CastController.routingListener?.invoke(false)
         capture = AudioCapture(p, 44_100, 352) { pcm, pts ->
             if (isAudible(pcm)) lastLoudMs = System.currentTimeMillis()
