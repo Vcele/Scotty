@@ -11,6 +11,9 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Job-level so step conditions can see whether a signing key is configured.
+      KEYSTORE_BASE64: ${{ secrets.SCOTTY_KEYSTORE_BASE64 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -36,8 +39,6 @@ jobs:
         run: cargo test
 
       - name: Signing key
-        env:
-          KEYSTORE_BASE64: ${{ secrets.SCOTTY_KEYSTORE_BASE64 }}
         if: env.KEYSTORE_BASE64 != ''
         run: |
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
@@ -52,8 +53,10 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           [[ "$VERSION" =~ ^[0-9] ]] || VERSION="0.0.0-dev"
           export SCOTTY_VERSION="$VERSION"
-          export SCOTTY_VERSION_CODE="${{ github.run_number }}"
+          # versionCode comes from app/build.gradle.kts, identical to local builds, so either
+          # APK installs over the other as an update.
           ./gradlew assembleRelease --no-daemon
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs app/build/outputs/apk/release/app-release.apk | grep SHA-256
           cp app/build/outputs/apk/release/app-release.apk "Scotty-$VERSION.apk"
 
       - uses: actions/upload-artifact@v4
