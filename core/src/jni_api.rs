@@ -68,8 +68,8 @@ pub extern "system" fn Java_app_scotty_core_ScottyCore_init(_env: JNIEnv, _c: JC
 }
 
 #[no_mangle]
-pub extern "system" fn Java_app_scotty_core_ScottyCore_miracastStart(_env: JNIEnv, _c: JClass, port: jint) -> jlong {
-    guard(-1, || start(MiracastSession::start(port as u16).map(|s| s as Arc<dyn Session>)))
+pub extern "system" fn Java_app_scotty_core_ScottyCore_miracastStart(_env: JNIEnv, _c: JClass, port: jint, allow_1080: jboolean) -> jlong {
+    guard(-1, || start(MiracastSession::start(port as u16, allow_1080 == JNI_TRUE).map(|s| s as Arc<dyn Session>)))
 }
 
 #[no_mangle]

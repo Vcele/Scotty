@@ -33,7 +33,7 @@ fn request(w: &mut TcpStream, r: &mut BufReader<TcpStream>, cseq: u32, line: &st
 fn full_wfd_session_streams_ts_over_rtp() {
     let _ = env_logger::builder().is_test(true).try_init();
     let port = 17_236;
-    let src = MiracastSession::start(port).unwrap();
+    let src = MiracastSession::start(port, true).unwrap();
     let rtp = UdpSocket::bind("127.0.0.1:0").unwrap();
     rtp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     let rtp_port = rtp.local_addr().unwrap().port();

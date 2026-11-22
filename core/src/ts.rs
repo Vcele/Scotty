@@ -5,7 +5,7 @@ pub const VIDEO_PID: u16 = 0x1011;
 pub const AUDIO_PID: u16 = 0x1100;
 pub const PACKET: usize = 188;
 
-const PTS_OFFSET: i64 = 27_000; // 300 ms head-room so PCR < PTS
+const PTS_OFFSET: i64 = 36_000; // 400 ms head-room: PCR < PTS, plus jitter tolerance at the sink
 const PCR_LAG: i64 = 13_500; // PCR runs 150 ms behind video PTS
 const AUD: [u8; 6] = [0, 0, 0, 1, 0x09, 0xF0];
 

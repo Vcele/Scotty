@@ -35,7 +35,8 @@ class MiracastSession(
     onEnded: (String?) -> Unit,
 ) : NativeSession(
     ctx, projection, ctx.resources.displayMetrics.densityDpi, rawPcm = false, reconnect = false, credentialKey = null, onEnded = onEnded,
-    starter = { ScottyCore.miracastStart(ScottyCore.MIRACAST_PORT) },
+    starter = { ScottyCore.miracastStart(ScottyCore.MIRACAST_PORT, Prefs.miracast1080(ctx)) },
+    keyFrameInterval = 4f, // the TV asks for key frames when it needs one; fewer bursts on weak links
 ) {
     private var receiver: BroadcastReceiver? = null
     private var wfdViaShell = false

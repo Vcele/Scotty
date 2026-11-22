@@ -26,6 +26,8 @@ class ScreenEncoder(
     private val fps: Int,
     private val bitrate: Int,
     private val avcLevel: Int,
+    /** Seconds between periodic key frames (HLS needs ~1 s segments; Miracast prefers fewer bursts). */
+    private val keyFrameInterval: Float = 1f,
     private val onFrame: (data: ByteArray, ptsUs: Long, keyFrame: Boolean) -> Unit,
 ) {
     private var codec: MediaCodec? = null
@@ -38,7 +40,7 @@ class ScreenEncoder(
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-            setFloat(MediaFormat.KEY_I_FRAME_INTERVAL, 1f)
+            setFloat(MediaFormat.KEY_I_FRAME_INTERVAL, keyFrameInterval)
             setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 1_000_000L / fps)
             setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
             if (withProfile) {

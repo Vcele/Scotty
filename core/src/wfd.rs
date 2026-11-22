@@ -45,7 +45,9 @@ pub const MODES: [Mode; 4] = [
 ];
 
 /// Picks the best mode both sides support plus whether AAC audio is possible.
-pub fn choose_formats(caps: &HashMap<String, String>) -> (Mode, bool) {
+/// Picks the best mode both sides support. `allow_1080`: 1080p needs a strong Wi-Fi Direct link;
+/// 720p (what most Miracast senders use) is far more robust, so it is the default.
+pub fn choose_formats(caps: &HashMap<String, String>, allow_1080: bool) -> (Mode, bool) {
     let mut mode = MODES[2];
     if let Some(v) = caps.get("wfd_video_formats") {
         let t: Vec<&str> = v.split([' ', ',']).filter(|s| !s.is_empty()).collect();
@@ -55,6 +57,7 @@ pub fn choose_formats(caps: &HashMap<String, String>) -> (Mode, bool) {
             mode = MODES
                 .iter()
                 .copied()
+                .filter(|m| allow_1080 || m.height < 1080)
                 .find(|m| cea & (1 << m.cea_bit) != 0 && level >= m.wfd_level)
                 .unwrap_or(MODES[3]);
         }
@@ -66,9 +69,10 @@ pub fn choose_formats(caps: &HashMap<String, String>) -> (Mode, bool) {
 /// TS packets → RTP (PT 33), 7 per datagram, handed to a pacing thread.
 ///
 /// Key frames are hundreds of datagrams; blasting them out at once overflows Wi-Fi Direct queues.
-/// The pacer spreads them out, keeps the kernel send buffer small (a big one hides congestion as
-/// seconds of lag), reports congestion early so the encoder can lower its bitrate, and on overflow
-/// drops only *video* – audio keeps flowing, so AV receivers don't lose sync and click.
+/// The pacer spreads them out and keeps the kernel send buffer small (a big one hides congestion as
+/// seconds of lag). Audio has its own lane that always goes first, so on a weak link the picture
+/// may suffer but the sound keeps arriving on time. Congestion is measured as *queueing delay* of
+/// video, which works the same at any bitrate.
 pub struct RtpTsSender {
     buf: [u8; 12 + 7 * PACKET],
     count: usize,
@@ -79,21 +83,26 @@ pub struct RtpTsSender {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PacerEvent {
-    /// Queue is building up – lower the bitrate.
+    /// Video is waiting too long – lower the bitrate.
     Congested,
-    /// Queue overflowed; video was dropped – lower the bitrate and send a key frame.
+    /// Video waited so long it was dropped – lower the bitrate and send a key frame.
     Overflow,
 }
 
+#[derive(Default)]
+struct Lanes {
+    audio: std::collections::VecDeque<Vec<u8>>,
+    video: std::collections::VecDeque<(Vec<u8>, Instant)>,
+}
+
 struct Pacer {
-    queue: Mutex<std::collections::VecDeque<(Vec<u8>, bool)>>, // (datagram, is video)
-    queued_bytes: std::sync::atomic::AtomicUsize,
+    lanes: Mutex<Lanes>,
     cv: std::sync::Condvar,
     stopped: AtomicBool,
     /// bytes per second the pacer sends at most
     rate: usize,
-    /// bytes of nominal video per second (for thresholds)
-    nominal: usize,
+    congest_after: Duration,
+    drop_after: Duration,
     last_signal: Mutex<Option<Instant>>,
     on_event: Box<dyn Fn(PacerEvent) + Send + Sync>,
 }
@@ -101,17 +110,7 @@ struct Pacer {
 impl RtpTsSender {
     pub fn new(dest: SocketAddr, max_bitrate: u32, on_event: Box<dyn Fn(PacerEvent) + Send + Sync>) -> io::Result<Self> {
         let sock = udp_with(TOS_VIDEO, 256 * 1024, None)?;
-        let nominal = max_bitrate as usize / 8;
-        let pacer = Arc::new(Pacer {
-            queue: Mutex::new(Default::default()),
-            queued_bytes: Default::default(),
-            cv: Default::default(),
-            stopped: AtomicBool::new(false),
-            rate: (nominal * 3).max(1_500_000),
-            nominal: nominal.max(250_000),
-            last_signal: Mutex::new(None),
-            on_event,
-        });
+        let pacer = Arc::new(Pacer::new((max_bitrate as usize / 8 * 3).max(1_500_000), on_event));
         let p = pacer.clone();
         thread::Builder::new().name("rtp-pacer".into()).spawn(move || p.run(sock, dest))?;
         Ok(Self { buf: [0; 12 + 7 * PACKET], count: 0, seq: rand_u32() as u16, ssrc: rand_u32(), pacer })
@@ -144,6 +143,19 @@ impl Drop for RtpTsSender {
 }
 
 impl Pacer {
+    fn new(rate: usize, on_event: Box<dyn Fn(PacerEvent) + Send + Sync>) -> Self {
+        Self {
+            lanes: Mutex::default(),
+            cv: Default::default(),
+            stopped: AtomicBool::new(false),
+            rate,
+            congest_after: Duration::from_millis(150),
+            drop_after: Duration::from_millis(600),
+            last_signal: Mutex::new(None),
+            on_event,
+        }
+    }
+
     fn signal(&self, e: PacerEvent) {
         let mut last = self.last_signal.lock().unwrap();
         let now = Instant::now();
@@ -157,27 +169,36 @@ impl Pacer {
     }
 
     fn push(&self, d: Vec<u8>, is_video: bool) {
-        let len = d.len();
-        let mut q = self.queue.lock().unwrap();
-        let queued = self.queued_bytes.load(Ordering::Relaxed) + len;
-        if queued > self.nominal / 2 {
-            // ~0.5 s of video stuck: keep audio and PSI, drop queued video, ask for a fresh key frame.
-            let before = q.len();
-            q.retain(|(_, v)| !*v);
-            let kept: usize = q.iter().map(|(d, _)| d.len()).sum();
-            self.queued_bytes.store(kept, Ordering::Relaxed);
-            log::warn!("rtp backlog overflow: dropped {} video datagrams, kept {} audio", before - q.len(), q.len());
-            drop(q);
-            self.signal(PacerEvent::Overflow);
-            q = self.queue.lock().unwrap();
-        } else if queued > self.nominal / 8 {
-            drop(q);
-            self.signal(PacerEvent::Congested);
-            q = self.queue.lock().unwrap();
+        let now = Instant::now();
+        let mut event = None;
+        {
+            let mut l = self.lanes.lock().unwrap();
+            if !is_video {
+                l.audio.push_back(d);
+            } else {
+                let waited = l.video.front().map(|(_, t)| now.duration_since(*t)).unwrap_or_default();
+                if waited > self.drop_after {
+                    log::warn!("video {} ms behind: dropped {} video datagrams, audio unaffected", waited.as_millis(), l.video.len());
+                    l.video.clear();
+                    event = Some(PacerEvent::Overflow);
+                } else if waited > self.congest_after {
+                    event = Some(PacerEvent::Congested);
+                }
+                l.video.push_back((d, now));
+            }
         }
-        q.push_back((d, is_video));
-        self.queued_bytes.fetch_add(len, Ordering::Relaxed);
         self.cv.notify_one();
+        if let Some(e) = event {
+            self.signal(e);
+        }
+    }
+
+    fn next(&self) -> Option<Vec<u8>> {
+        let mut l = self.lanes.lock().unwrap();
+        while l.audio.is_empty() && l.video.is_empty() && !self.stopped.load(Ordering::SeqCst) {
+            l = self.cv.wait_timeout(l, Duration::from_millis(200)).unwrap().0;
+        }
+        l.audio.pop_front().or_else(|| l.video.pop_front().map(|(d, _)| d))
     }
 
     fn run(&self, sock: UdpSocket, dest: SocketAddr) {
@@ -185,17 +206,7 @@ impl Pacer {
         let mut tokens = burst;
         let mut last = Instant::now();
         while !self.stopped.load(Ordering::SeqCst) {
-            let d = {
-                let mut q = self.queue.lock().unwrap();
-                while q.is_empty() && !self.stopped.load(Ordering::SeqCst) {
-                    q = self.cv.wait_timeout(q, Duration::from_millis(200)).unwrap().0;
-                }
-                match q.pop_front() {
-                    Some((d, _)) => d,
-                    None => continue,
-                }
-            };
-            self.queued_bytes.fetch_sub(d.len().min(self.queued_bytes.load(Ordering::Relaxed)), Ordering::Relaxed);
+            let Some(d) = self.next() else { continue };
             let now = Instant::now();
             tokens = (tokens + now.duration_since(last).as_secs_f64() * self.rate as f64).min(burst);
             last = now;
@@ -228,6 +239,7 @@ impl TsSink for RtpTsSender {
 }
 
 pub struct MiracastSession {
+    allow_1080: bool,
     events: Arc<Events>,
     stopped: AtomicBool,
     session_id: String,
@@ -241,10 +253,11 @@ pub struct MiracastSession {
 
 impl MiracastSession {
     /// Starts listening on `port` for the sink's RTSP connection.
-    pub fn start(port: u16) -> io::Result<Arc<Self>> {
+    pub fn start(port: u16, allow_1080: bool) -> io::Result<Arc<Self>> {
         let listener = TcpListener::bind(("0.0.0.0", port))?;
         listener.set_nonblocking(true)?;
         let s = Arc::new(Self {
+            allow_1080,
             events: Arc::new(Events::default()),
             stopped: AtomicBool::new(false),
             session_id: format!("{}", 10_000_000 + rand_u32() % 89_999_999),
@@ -330,7 +343,7 @@ impl MiracastSession {
         expect_ok(&m3, "Display didn't report its capabilities")?;
         let caps = m3.parameters();
         log::info!("sink caps: {caps:?}");
-        let (mode, audio) = choose_formats(&caps);
+        let (mode, audio) = choose_formats(&caps, self.allow_1080);
         let rtp_ports = caps
             .get("wfd_client_rtp_ports")
             .cloned()
@@ -442,10 +455,17 @@ impl MiracastSession {
         let Some((mode, audio, _)) = *self.negotiated.lock().unwrap() else { return };
         let dest = SocketAddr::new(c.peer_ip(), self.sink_rtp_port.load(Ordering::SeqCst));
         let ev = self.events.clone();
+        // Key frames are the biggest bursts; requesting one per overflow fed the congestion. At most
+        // one every 2 s.
+        let last_idr = Mutex::new(None::<Instant>);
         let on_event = Box::new(move |e: PacerEvent| {
             ev.emit(Event::Congestion);
             if e == PacerEvent::Overflow {
-                ev.emit(Event::KeyFrame);
+                let mut last = last_idr.lock().unwrap();
+                if last.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
+                    *last = Some(Instant::now());
+                    ev.emit(Event::KeyFrame);
+                }
             }
         });
         match RtpTsSender::new(dest, mode.bitrate, on_event) {
@@ -532,27 +552,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn overflow_drops_video_but_keeps_audio() {
+    fn audio_goes_first_and_stale_video_is_dropped() {
         let events = Arc::new(Mutex::new(Vec::new()));
         let ev = events.clone();
         // No sending thread: the queue only grows, like a stalled Wi-Fi link.
-        let p = Pacer {
-            queue: Mutex::new(Default::default()),
-            queued_bytes: Default::default(),
-            cv: Default::default(),
-            stopped: AtomicBool::new(false),
-            rate: 3_000_000,
-            nominal: 1_000_000,
-            last_signal: Mutex::new(None),
-            on_event: Box::new(move |e| ev.lock().unwrap().push(e)),
-        };
-        for i in 0..400 {
-            p.push(vec![0u8; 1328], i % 10 != 0); // every 10th datagram is audio
+        let mut p = Pacer::new(3_000_000, Box::new(move |e| ev.lock().unwrap().push(e)));
+        p.congest_after = Duration::from_millis(5);
+        p.drop_after = Duration::from_millis(20);
+        for _ in 0..50 {
+            p.push(vec![1u8; 100], true);
         }
-        let q = p.queue.lock().unwrap();
-        let audio = q.iter().filter(|(_, v)| !*v).count();
-        assert_eq!(audio, 40, "no audio datagram may be dropped");
-        assert!(q.len() < 400, "video must have been dropped");
+        p.push(vec![2u8; 100], false);
+        // audio jumps the queue
+        assert_eq!(p.next().unwrap()[0], 2);
+        thread::sleep(Duration::from_millis(10));
+        p.push(vec![1u8; 100], true); // video waited > 5 ms → congested
+        p.push(vec![2u8; 100], false);
+        thread::sleep(Duration::from_millis(25));
+        p.push(vec![1u8; 100], true); // video waited > 20 ms → dropped
+        let l = p.lanes.lock().unwrap();
+        assert_eq!(l.audio.len(), 1, "audio must never be dropped");
+        assert_eq!(l.video.len(), 1, "stale video must be dropped");
+        drop(l);
         let ev = events.lock().unwrap();
         assert!(ev.contains(&PacerEvent::Congested));
         assert!(ev.contains(&PacerEvent::Overflow));
@@ -563,13 +584,15 @@ mod tests {
         let mut caps = HashMap::new();
         caps.insert("wfd_video_formats".into(), "40 00 02 04 0001FFFF 3FFFFFFF 00000FFF 00 0000 0000 11 none none".into());
         caps.insert("wfd_audio_codecs".into(), "LPCM 00000003 00, AAC 0000000F 00".into());
-        let (m, a) = choose_formats(&caps);
+        let (m, a) = choose_formats(&caps, true);
         assert_eq!((m.width, m.height, m.fps), (1920, 1080, 30));
         assert!(a);
+        // default: 720p even when the TV could do 1080p
+        assert_eq!(choose_formats(&caps, false).0.height, 720);
 
         caps.insert("wfd_video_formats".into(), "00 00 01 02 000000E1 00000000 00000000 00 0000 0000 00 none none".into());
         caps.insert("wfd_audio_codecs".into(), "LPCM 00000003 00".into());
-        let (m, a) = choose_formats(&caps);
+        let (m, a) = choose_formats(&caps, true);
         assert_eq!((m.width, m.fps), (1280, 60)); // level 3.2 can't do 1080p
         assert!(!a);
     }

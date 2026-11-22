@@ -117,3 +117,23 @@ private fun MiracastNameDialog(current: String, onSave: (String?) -> Unit, onDis
         },
     )
 }
+
+/** 720p is the robust default; 1080p only helps when the Wi-Fi Direct link is strong. */
+@Composable
+fun MiracastQualityRow() {
+    val ctx = LocalContext.current
+    var sharp by remember { mutableStateOf(Prefs.miracast1080(ctx)) }
+    ListItem(
+        headlineContent = { Text("Sharp 1080p") },
+        supportingContent = {
+            Text(
+                if (sharp) "Needs a strong connection – turn off if the picture stutters"
+                else "Off: smooth 720p, best for most Wi-Fi Direct connections",
+            )
+        },
+        trailingContent = {
+            androidx.compose.material3.Switch(checked = sharp, onCheckedChange = { sharp = it; Prefs.setMiracast1080(ctx, it) })
+        },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+    )
+}

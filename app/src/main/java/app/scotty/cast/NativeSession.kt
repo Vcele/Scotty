@@ -25,6 +25,7 @@ open class NativeSession(
     /** Whether a dropped session should be re-established (not for Miracast). */
     private val reconnect: Boolean,
     private val credentialKey: String?,
+    private val keyFrameInterval: Float = 1f,
     private val onEnded: (String?) -> Unit,
     private val starter: () -> Long,
 ) : CastSession {
@@ -155,6 +156,7 @@ open class NativeSession(
     }
 
     private var maxBitrate = 0
+    private var minBitrate = 1_000_000
     private var curBitrate = 0
     private var lastCongestionMs = 0L
     private var lastRaiseMs = 0L
@@ -162,7 +164,7 @@ open class NativeSession(
     /** Network couldn't keep up: drop the video bitrate quickly. */
     private fun onCongestion() {
         val enc = encoder ?: return
-        val next = maxOf(MIN_BITRATE, (curBitrate * 0.7).toInt())
+        val next = maxOf(minBitrate, (curBitrate * 0.7).toInt())
         lastCongestionMs = System.currentTimeMillis()
         if (next != curBitrate) {
             curBitrate = next
@@ -197,7 +199,8 @@ open class NativeSession(
         maxBitrate = bitrate
         curBitrate = (bitrate * 0.75).toInt()
         lastCongestionMs = System.currentTimeMillis()
-        encoder = ScreenEncoder(projection, w, h, dpi, fps, curBitrate, avcLevel) { data, pts, key ->
+        minBitrate = if (h >= 1080) 1_500_000 else 1_000_000
+        encoder = ScreenEncoder(projection, w, h, dpi, fps, curBitrate, avcLevel, keyFrameInterval) { data, pts, key ->
             ScottyCore.pushVideo(handle, data, pts, key)
         }.also { it.start() }
         ScottyCore.log(TAG, "video ${w}x$h@$fps, starting at ${curBitrate / 1000} kbit/s (max ${bitrate / 1000})")

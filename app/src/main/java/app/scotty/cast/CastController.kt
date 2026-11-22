@@ -88,6 +88,10 @@ object Prefs {
     fun miracastName(ctx: Context): String? = p(ctx).getString("miracast_name", null)
     fun setMiracastName(ctx: Context, v: String?) = p(ctx).edit().putString("miracast_name", v).apply()
 
+    /** Allow 1080p for Miracast (needs a strong Wi-Fi Direct link); default 720p. */
+    fun miracast1080(ctx: Context) = p(ctx).getBoolean("miracast_1080", false)
+    fun setMiracast1080(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("miracast_1080", v).apply()
+
     /** AirPlay 2 long-term pairing per receiver name. */
     fun credentials(ctx: Context, device: String): String? = p(ctx).getString("creds:$device", null)
     fun setCredentials(ctx: Context, device: String, creds: String) = p(ctx).edit().putString("creds:$device", creds).apply()

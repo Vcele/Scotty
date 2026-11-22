@@ -10,7 +10,7 @@ object ScottyCore {
     private external fun init()
 
     /** Miracast source listening for the sink's RTSP connection. Returns a handle or < 0. */
-    external fun miracastStart(port: Int): Long
+    external fun miracastStart(port: Int, allow1080: Boolean): Long
 
     /**
      * AirPlay audio. Push 16-bit LE stereo 44.1 kHz PCM. [protocol]: 0 auto, 1 AirPlay 1, 2 AirPlay 2.
