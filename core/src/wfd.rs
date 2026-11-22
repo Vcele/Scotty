@@ -57,7 +57,8 @@ pub fn choose_formats(caps: &HashMap<String, String>, allow_1080: bool) -> (Mode
             mode = MODES
                 .iter()
                 .copied()
-                .filter(|m| allow_1080 || m.height < 1080)
+                // Default: 720p at 30 fps – 60 fps doubles the packets for little gain when mirroring.
+                .filter(|m| allow_1080 || (m.height < 1080 && m.fps <= 30))
                 .find(|m| cea & (1 << m.cea_bit) != 0 && level >= m.wfd_level)
                 .unwrap_or(MODES[3]);
         }
@@ -193,34 +194,68 @@ impl Pacer {
         }
     }
 
-    fn next(&self) -> Option<Vec<u8>> {
+    fn next(&self) -> Option<(Vec<u8>, Option<Instant>)> {
         let mut l = self.lanes.lock().unwrap();
         while l.audio.is_empty() && l.video.is_empty() && !self.stopped.load(Ordering::SeqCst) {
             l = self.cv.wait_timeout(l, Duration::from_millis(200)).unwrap().0;
         }
-        l.audio.pop_front().or_else(|| l.video.pop_front().map(|(d, _)| d))
+        l.audio.pop_front().map(|d| (d, None)).or_else(|| l.video.pop_front().map(|(d, t)| (d, Some(t))))
     }
 
     fn run(&self, sock: UdpSocket, dest: SocketAddr) {
-        let burst = 24.0 * 1024.0;
+        // Token bucket that keeps credit for time it overslept: Android often wakes threads late
+        // (timer slack), and resetting the credit after each sleep throttled sending to roughly one
+        // datagram per wake-up – about 1 Mbit/s regardless of the link.
+        precise_timers();
+        let burst = 128.0 * 1024.0;
+        let min_sleep = 0.002; // don't bother sleeping for less than 2 ms
         let mut tokens = burst;
         let mut last = Instant::now();
+        let mut stats_at = Instant::now();
+        let (mut sent, mut max_delay) = (0usize, Duration::ZERO);
         while !self.stopped.load(Ordering::SeqCst) {
-            let Some(d) = self.next() else { continue };
+            let Some((d, queued_at)) = self.next() else { continue };
             let now = Instant::now();
             tokens = (tokens + now.duration_since(last).as_secs_f64() * self.rate as f64).min(burst);
             last = now;
-            if tokens < d.len() as f64 {
-                let wait = (d.len() as f64 - tokens) / self.rate as f64;
-                thread::sleep(Duration::from_secs_f64(wait));
-                tokens = d.len() as f64;
-                last = Instant::now();
+            let deficit = d.len() as f64 - tokens;
+            if deficit > 0.0 {
+                let wait = deficit / self.rate as f64;
+                if wait >= min_sleep {
+                    thread::sleep(Duration::from_secs_f64(wait));
+                    let now = Instant::now();
+                    tokens = (tokens + now.duration_since(last).as_secs_f64() * self.rate as f64).min(burst);
+                    last = now;
+                }
             }
             tokens -= d.len() as f64;
+            if let Some(t) = queued_at {
+                max_delay = max_delay.max(t.elapsed());
+            }
             if let Err(e) = sock.send_to(&d, dest) {
                 log::debug!("rtp send: {e}");
             }
+            sent += d.len();
+            if stats_at.elapsed() >= Duration::from_secs(5) {
+                log::info!(
+                    "video link: sent {} kbit/s, video waited up to {} ms",
+                    sent * 8 / 1000 / stats_at.elapsed().as_secs().max(1) as usize,
+                    max_delay.as_millis()
+                );
+                stats_at = Instant::now();
+                sent = 0;
+                max_delay = Duration::ZERO;
+                precise_timers(); // Android may reset it when the app changes scheduling group
+            }
         }
+    }
+}
+
+/// Asks the kernel to wake this thread on time (default slack on Android can be several ms).
+fn precise_timers() {
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    unsafe {
+        libc::prctl(libc::PR_SET_TIMERSLACK, 50_000 as libc::c_ulong);
     }
 }
 
@@ -564,7 +599,7 @@ mod tests {
         }
         p.push(vec![2u8; 100], false);
         // audio jumps the queue
-        assert_eq!(p.next().unwrap()[0], 2);
+        assert_eq!(p.next().unwrap().0[0], 2);
         thread::sleep(Duration::from_millis(10));
         p.push(vec![1u8; 100], true); // video waited > 5 ms → congested
         p.push(vec![2u8; 100], false);
@@ -587,8 +622,9 @@ mod tests {
         let (m, a) = choose_formats(&caps, true);
         assert_eq!((m.width, m.height, m.fps), (1920, 1080, 30));
         assert!(a);
-        // default: 720p even when the TV could do 1080p
-        assert_eq!(choose_formats(&caps, false).0.height, 720);
+        // default: 720p30 even when the TV could do more
+        let d = choose_formats(&caps, false).0;
+        assert_eq!((d.height, d.fps), (720, 30));
 
         caps.insert("wfd_video_formats".into(), "00 00 01 02 000000E1 00000000 00000000 00 0000 0000 00 none none".into());
         caps.insert("wfd_audio_codecs".into(), "LPCM 00000003 00".into());

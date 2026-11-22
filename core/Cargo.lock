@@ -695,6 +695,7 @@ dependencies = [
  "getrandom",
  "hkdf",
  "jni",
+ "libc",
  "log",
  "num-bigint",
  "plist",
