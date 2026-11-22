@@ -89,28 +89,35 @@ class MiracastSession(
             },
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
-        m.stopPeerDiscovery(c, null)
+        // The TV must be in the phone's *current* peer list, or connect fails with a generic error.
+        // Changing the Wi-Fi Display setting refreshes Wi-Fi Direct, so re-scan and wait for the TV.
+        waitForPeer(m, c, 8000)
         val config = WifiP2pConfig().apply {
             deviceAddress = target.deviceAddress
             wps.setup = WpsInfo.PBC
             groupOwnerIntent = 14
         }
-        fun attempt(retry: Boolean) {
+        fun attempt(n: Int) {
             m.connect(c, config, object : WifiP2pManager.ActionListener {
-                override fun onSuccess() = ScottyCore.log(TAG, "Wi-Fi Direct invitation sent to ${target.name}")
+                override fun onSuccess() = ScottyCore.log(TAG, "Wi-Fi Direct invitation sent to ${target.name} (attempt $n)")
                 override fun onFailure(reason: Int) {
-                    ScottyCore.log(TAG, "Wi-Fi Direct connect refused locally (reason $reason)")
-                    if (retry && reason == WifiP2pManager.BUSY) {
+                    val why = when (reason) { 0 -> "error"; 1 -> "Wi-Fi Direct unsupported"; 2 -> "busy"; else -> "reason $reason" }
+                    ScottyCore.log(TAG, "Wi-Fi Direct connect refused locally: $why (attempt $n)")
+                    if (n < 3 && (reason == WifiP2pManager.ERROR || reason == WifiP2pManager.BUSY)) {
                         m.cancelConnect(c, null)
-                        m.removeGroup(c, null)
-                        Handler(Looper.getMainLooper()).postDelayed({ attempt(false) }, 1500)
+                        if (reason == WifiP2pManager.BUSY) m.removeGroup(c, null)
+                        Thread {
+                            Thread.sleep(1000)
+                            waitForPeer(m, c, 6000)
+                            Handler(Looper.getMainLooper()).post { attempt(n + 1) }
+                        }.start()
                     } else {
-                        formed.completeExceptionally(IllegalStateException("Wi-Fi Direct connect failed (code $reason)"))
+                        formed.completeExceptionally(IllegalStateException("Wi-Fi Direct connect failed ($why)"))
                     }
                 }
             })
         }
-        attempt(true)
+        attempt(1)
         return try {
             try {
                 formed.get(20, TimeUnit.SECONDS)
@@ -130,6 +137,25 @@ class MiracastSession(
         } catch (e: ExecutionException) {
             throw e.cause ?: e
         }
+    }
+
+
+    /** Starts discovery and waits until the target shows up as a peer (or the timeout passes). */
+    @SuppressLint("MissingPermission")
+    private fun waitForPeer(m: WifiP2pManager, c: WifiP2pManager.Channel, timeoutMs: Long) {
+        m.discoverPeers(c, null)
+        val end = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < end) {
+            val seen = CompletableFuture<Int?>()
+            m.requestPeers(c) { peers -> seen.complete(peers?.deviceList?.firstOrNull { it.deviceAddress == target.deviceAddress }?.status) }
+            val status = runCatching { seen.get(1, TimeUnit.SECONDS) }.getOrNull()
+            if (status != null && status != 4) { // 4 = unavailable
+                ScottyCore.log(TAG, "TV visible as peer (status $status)")
+                return
+            }
+            Thread.sleep(500)
+        }
+        ScottyCore.log(TAG, "TV not seen in a fresh scan within ${timeoutMs / 1000}s – trying anyway")
     }
 
     override fun stop() {
