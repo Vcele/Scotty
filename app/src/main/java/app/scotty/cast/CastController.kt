@@ -84,6 +84,10 @@ object Prefs {
     fun grantsDone(ctx: Context) = p(ctx).getBoolean("grants_done", false)
     fun setGrantsDone(ctx: Context, v: Boolean) = p(ctx).edit().putBoolean("grants_done", v).apply()
 
+    /** Name the phone shows on Miracast TVs (Wi-Fi Direct device name); null = leave as is. */
+    fun miracastName(ctx: Context): String? = p(ctx).getString("miracast_name", null)
+    fun setMiracastName(ctx: Context, v: String?) = p(ctx).edit().putString("miracast_name", v).apply()
+
     /** AirPlay 2 long-term pairing per receiver name. */
     fun credentials(ctx: Context, device: String): String? = p(ctx).getString("creds:$device", null)
     fun setCredentials(ctx: Context, device: String, creds: String) = p(ctx).edit().putString("creds:$device", creds).apply()

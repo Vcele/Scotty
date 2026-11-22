@@ -184,6 +184,33 @@ class ScottyShellService(private val given: Context?) : IScottyShell.Stub() {
         }.also { Log.i(TAG, "setWfdSource($enable) → $it") }
     }
 
+    /** The Wi-Fi Direct device name TVs show; a system API that shell's NETWORK_SETTINGS allows. */
+    @Synchronized
+    override fun setP2pDeviceName(name: String): String {
+        installShellActivityThread()
+        val ctx = shellContext()
+        val mgr = ctx.getSystemService(android.net.wifi.p2p.WifiP2pManager::class.java) ?: return "Wi-Fi Direct unavailable"
+        val channel = p2pChannel ?: run {
+            val t = android.os.HandlerThread("p2p").apply { start() }
+            p2pThread = t
+            mgr.initialize(ctx, t.looper, null).also { p2pChannel = it }
+        } ?: return "Wi-Fi Direct channel unavailable"
+        val result = java.util.concurrent.CompletableFuture<String>()
+        return try {
+            val m = android.net.wifi.p2p.WifiP2pManager::class.java.getMethod(
+                "setDeviceName", android.net.wifi.p2p.WifiP2pManager.Channel::class.java,
+                String::class.java, android.net.wifi.p2p.WifiP2pManager.ActionListener::class.java,
+            )
+            m.invoke(mgr, channel, name, object : android.net.wifi.p2p.WifiP2pManager.ActionListener {
+                override fun onSuccess() { result.complete("ok") }
+                override fun onFailure(reason: Int) { result.complete("refused (reason $reason)") }
+            })
+            result.get(3, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (e: Throwable) {
+            "error: ${(e.cause ?: e).javaClass.simpleName}: ${(e.cause ?: e).message}"
+        }.also { Log.i(TAG, "setP2pDeviceName → $it") }
+    }
+
     /** A context that identifies as the shell package (what scrcpy calls FakeContext). */
     private fun shellContext(): Context = object : ContextWrapper(systemContext() ?: given) {
         override fun getPackageName() = SHELL_PACKAGE

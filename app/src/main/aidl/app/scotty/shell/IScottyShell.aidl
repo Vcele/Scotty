@@ -22,4 +22,7 @@ interface IScottyShell {
      * Returns "ok" or a reason.
      */
     String setWfdSource(boolean enable, int controlPort) = 4;
+
+    /** Sets the Wi-Fi Direct device name (what TVs show). Needs NETWORK_SETTINGS. Returns "ok" or a reason. */
+    String setP2pDeviceName(String name) = 5;
 }

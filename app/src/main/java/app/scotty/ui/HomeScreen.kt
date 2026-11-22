@@ -159,6 +159,7 @@ fun HomeScreen(vm: MainViewModel, onCast: (CastTarget) -> Unit, onStop: () -> Un
             }
             if (tab == 0) {
                 item { HintCard(Icons.AutoMirrored.Rounded.ScreenShare, "Mirror your whole screen with sound to any Miracast TV, projector or stick – no Wi-Fi network needed. Make sure screen mirroring / “Screen Share” is open on the TV.") }
+                item { MiracastNameRow() }
                 item { SectionHeader("Nearby displays", wfdScanning) }
                 wfdError?.let { err -> item { ErrorLine(err) } }
                 if (wfd.isEmpty() && wfdError == null) item { EmptyState("Looking for Miracast displays…") }

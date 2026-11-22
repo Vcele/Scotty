@@ -179,6 +179,10 @@ object PowerMode {
     fun setWfdSource(enable: Boolean): String? =
         runCatching { service?.setWfdSource(enable, 7236) }.getOrElse { "error: ${it.message}" }
 
+    /** Sets the Wi-Fi Direct device name through the shell helper; null if power mode is off. */
+    fun setP2pDeviceName(name: String): String? =
+        if (service == null) null else runCatching { service?.setP2pDeviceName(name) }.getOrElse { "error: ${it.message}" }
+
     /** Runs a shell command through the helper; returns its output, or null if unavailable. */
     fun exec(command: String): String? = runCatching { service?.exec(command)?.substringAfter('\n') }.getOrNull()
 

@@ -17,6 +17,7 @@ import androidx.core.content.ContextCompat
 import app.scotty.cast.CastController
 import app.scotty.cast.CastTarget
 import app.scotty.cast.NativeSession
+import app.scotty.cast.Prefs
 import app.scotty.core.ScottyCore
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutionException
@@ -47,6 +48,9 @@ class MiracastSession(
         ScottyCore.log(TAG, "Miracast source advertisement via power mode: ${viaShell ?: "power mode off"}")
         if (!wfdViaShell) {
             P2p.tryAdvertiseWfdSource(ctx) { ok -> ScottyCore.log(TAG, "Miracast source advertisement as app: ${if (ok) "ok" else "refused"}") }
+        }
+        Prefs.miracastName(ctx)?.let { name ->
+            ScottyCore.log(TAG, "device name \"$name\": ${app.scotty.shell.PowerMode.setP2pDeviceName(name) ?: "needs power mode"}")
         }
         CastController.status("Connecting over Wi-Fi Direct… accept the request on your TV if asked")
         val info = connectP2p()
