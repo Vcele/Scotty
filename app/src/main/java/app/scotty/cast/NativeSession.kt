@@ -177,8 +177,8 @@ open class NativeSession(
     private fun maybeRaiseBitrate() {
         val enc = encoder ?: return
         val now = System.currentTimeMillis()
-        if (curBitrate >= maxBitrate || now - lastCongestionMs < 10_000 || now - lastRaiseMs < 5_000) return
-        curBitrate = minOf(maxBitrate, (curBitrate * 1.15).toInt())
+        if (curBitrate >= maxBitrate || now - lastCongestionMs < 8_000 || now - lastRaiseMs < 4_000) return
+        curBitrate = minOf(maxBitrate, (curBitrate * 1.2).toInt())
         lastRaiseMs = now
         enc.setBitrate(curBitrate)
         ScottyCore.log(TAG, "link stable – video bitrate raised to ${curBitrate / 1000} kbit/s")
@@ -197,7 +197,7 @@ open class NativeSession(
         val projection = projection ?: error("Screen capture permission missing")
         // Start below the mode's maximum; adaptive bitrate raises it when the link proves stable.
         maxBitrate = bitrate
-        curBitrate = (bitrate * 0.75).toInt()
+        curBitrate = (bitrate * 0.5).toInt() // the Wi-Fi link ramps up after connecting; start gently
         lastCongestionMs = System.currentTimeMillis()
         minBitrate = if (h >= 1080) 1_500_000 else 1_000_000
         encoder = ScreenEncoder(projection, w, h, dpi, fps, curBitrate, avcLevel, keyFrameInterval) { data, pts, key ->

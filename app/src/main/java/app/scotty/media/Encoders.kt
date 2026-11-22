@@ -36,7 +36,11 @@ class ScreenEncoder(
 
     fun start() {
         val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-        fun format(withProfile: Boolean) = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+        val cbr = runCatching {
+            codec.codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC).encoderCapabilities
+                .isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+        }.getOrDefault(false)
+        fun format(withProfile: Boolean, tuned: Boolean) = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
@@ -47,14 +51,31 @@ class ScreenEncoder(
                 setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedBaseline)
                 setInteger(MediaFormat.KEY_LEVEL, avcLevel)
             }
+            if (tuned) {
+                // Streaming over a constrained link: constant bitrate so the target is actually honoured
+                // (VBR overshot 3-4x on screen content), real-time priority and no frame buffering.
+                if (cbr) setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+                setInteger(MediaFormat.KEY_PRIORITY, 0)
+                setInteger(MediaFormat.KEY_LATENCY, 1)
+            }
         }
-        try {
-            codec.configure(format(true), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        } catch (e: Exception) {
-            Log.w(TAG, "profile/level rejected, falling back: ${e.message}")
-            codec.reset()
-            codec.configure(format(false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        val attempts = listOf(true to true, false to true, false to false)
+        var used: Pair<Boolean, Boolean>? = null
+        for ((profile, tuned) in attempts) {
+            try {
+                codec.configure(format(profile, tuned), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                used = profile to tuned
+                break
+            } catch (e: Exception) {
+                Log.w(TAG, "encoder config (profile=$profile, tuned=$tuned) rejected: ${e.message}")
+                codec.reset()
+            }
         }
+        checkNotNull(used) { "video encoder refused every configuration" }
+        app.scotty.core.ScottyCore.log(
+            TAG, "encoder ${codec.name}: ${if (used.second && cbr) "constant bitrate" else "variable bitrate"}, " +
+                "low latency ${used.second}, baseline profile ${used.first}",
+        )
         val surface = codec.createInputSurface()
         codec.start()
         this.codec = codec
