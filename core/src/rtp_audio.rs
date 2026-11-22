@@ -51,6 +51,7 @@ struct Stream {
     pending: Vec<u8>,
     seq: u16,
     first: bool,
+    /// When the last capture chunk arrived (stall detection).
     start: Option<Instant>,
     history: Vec<Option<Vec<u8>>>,
 }
@@ -141,6 +142,23 @@ impl RtpAudio {
     pub fn push_pcm(&self, data: &[u8]) {
         let Some(dest) = *self.dest.lock().unwrap() else { return };
         let mut st = self.stream.lock().unwrap();
+        // A real capture stall (nothing arrived for > 300 ms): fill the gap with silence so the
+        // receiver doesn't underrun. Small, steady clock drift between capture and wall clock is
+        // left alone – the sync packets let the receiver follow it, and padding for drift would
+        // insert audible gaps every few minutes.
+        let now = Instant::now();
+        if let Some(prev) = st.start.replace(now) {
+            let gap = now.duration_since(prev);
+            if gap > Duration::from_millis(300) {
+                let fill = ((gap - Duration::from_millis(50)).min(Duration::from_secs(2)).as_micros() as u64 * RATE
+                    / 1_000_000) as usize
+                    / FRAMES;
+                log::info!("capture stalled for {} ms, filling {} silent packets", gap.as_millis(), fill);
+                for _ in 0..fill {
+                    self.send_frame(&mut st, dest, &[0u8; FRAME_BYTES]);
+                }
+            }
+        }
         st.pending.extend_from_slice(data);
         // Bound the backlog: if capture delivered a burst (e.g. after a stall), drop the oldest
         // audio instead of building up latency.
@@ -153,13 +171,6 @@ impl RtpAudio {
             let chunk: Vec<u8> = st.pending.drain(..FRAME_BYTES).collect();
             if chunk.iter().all(|&b| b == 0) {
                 self.silent_frames.fetch_add(1, Ordering::Relaxed);
-            }
-            let start = *st.start.get_or_insert_with(Instant::now);
-            // Capture stalls (nothing playing, CPU hiccup): pad with silence so the RTP clock
-            // keeps pace with real time and the receiver never underruns.
-            let expected = start.elapsed().as_micros() as u64 * RATE / 1_000_000;
-            while expected.saturating_sub(self.samples_sent.load(Ordering::SeqCst)) > RATE / 4 {
-                self.send_frame(&mut st, dest, &[0u8; FRAME_BYTES]);
             }
             self.send_frame(&mut st, dest, &chunk);
         }

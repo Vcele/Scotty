@@ -11,8 +11,13 @@ pub const TOS_VIDEO: u32 = 0xA0; // CS5 → AC_VI
 
 /// UDP socket bound to an ephemeral port with big buffers and a QoS mark.
 pub fn udp(tos: u32, read_timeout: Option<Duration>) -> io::Result<UdpSocket> {
+    udp_with(tos, 2 * 1024 * 1024, read_timeout)
+}
+
+/// Like [`udp`] with an explicit send buffer size.
+pub fn udp_with(tos: u32, send_buffer: usize, read_timeout: Option<Duration>) -> io::Result<UdpSocket> {
     let s = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-    let _ = s.set_send_buffer_size(2 * 1024 * 1024);
+    let _ = s.set_send_buffer_size(send_buffer);
     let _ = s.set_recv_buffer_size(512 * 1024);
     let _ = s.set_tos(tos);
     s.bind(&SocketAddr::from(([0, 0, 0, 0], 0)).into())?;

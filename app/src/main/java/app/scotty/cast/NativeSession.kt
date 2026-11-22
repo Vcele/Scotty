@@ -68,6 +68,7 @@ open class NativeSession(
             while (!stopped) {
                 val ev = ScottyCore.pollEvent(handle, 500)
                 if (rawPcm && wasLive) checkCapture()
+                if (encoder != null) maybeRaiseBitrate()
                 if (ev == null) continue
                 if (!handleEvent(ev.split('\t'))) break
             }
@@ -84,6 +85,7 @@ open class NativeSession(
                 CastController.status(e.getOrElse(1) { "" }, live = true)
             }
             "idr" -> encoder?.requestKeyFrame()
+            "congestion" -> onCongestion()
             "pin" -> CastController.pinRequested()
             "creds" -> credentialKey?.let { key -> e.getOrNull(1)?.let { Prefs.setCredentials(ctx, key, it) } }
             "mode" -> runCatching {
@@ -152,6 +154,34 @@ open class NativeSession(
         audioManager.dispatchMediaKeyEvent(android.view.KeyEvent(t, t, android.view.KeyEvent.ACTION_UP, code, 0))
     }
 
+    private var maxBitrate = 0
+    private var curBitrate = 0
+    private var lastCongestionMs = 0L
+    private var lastRaiseMs = 0L
+
+    /** Network couldn't keep up: drop the video bitrate quickly. */
+    private fun onCongestion() {
+        val enc = encoder ?: return
+        val next = maxOf(MIN_BITRATE, (curBitrate * 0.7).toInt())
+        lastCongestionMs = System.currentTimeMillis()
+        if (next != curBitrate) {
+            curBitrate = next
+            enc.setBitrate(next)
+            ScottyCore.log(TAG, "congestion – video bitrate lowered to ${next / 1000} kbit/s")
+        }
+    }
+
+    /** After 10 s without congestion, creep back up towards the mode's bitrate. */
+    private fun maybeRaiseBitrate() {
+        val enc = encoder ?: return
+        val now = System.currentTimeMillis()
+        if (curBitrate >= maxBitrate || now - lastCongestionMs < 10_000 || now - lastRaiseMs < 5_000) return
+        curBitrate = minOf(maxBitrate, (curBitrate * 1.15).toInt())
+        lastRaiseMs = now
+        enc.setBitrate(curBitrate)
+        ScottyCore.log(TAG, "link stable – video bitrate raised to ${curBitrate / 1000} kbit/s")
+    }
+
     private fun startMedia(w: Int, h: Int, fps: Int, bitrate: Int, level: Int, audio: Boolean) {
         if (encoder != null) {
             encoder?.requestKeyFrame()
@@ -163,16 +193,47 @@ open class NativeSession(
             else -> CodecProfileLevel.AVCLevel31
         }
         val projection = projection ?: error("Screen capture permission missing")
-        encoder = ScreenEncoder(projection, w, h, dpi, fps, bitrate, avcLevel) { data, pts, key ->
+        // Start below the mode's maximum; adaptive bitrate raises it when the link proves stable.
+        maxBitrate = bitrate
+        curBitrate = (bitrate * 0.75).toInt()
+        lastCongestionMs = System.currentTimeMillis()
+        encoder = ScreenEncoder(projection, w, h, dpi, fps, curBitrate, avcLevel) { data, pts, key ->
             ScottyCore.pushVideo(handle, data, pts, key)
         }.also { it.start() }
+        ScottyCore.log(TAG, "video ${w}x$h@$fps, starting at ${curBitrate / 1000} kbit/s (max ${bitrate / 1000})")
         if (audio) {
-            val projection = projection ?: return
             val enc = AacEncoder(48_000) { frame, pts -> ScottyCore.pushAudio(handle, frame, pts) }
             aac = enc
-            capture = runCatching {
-                AudioCapture(projection, 48_000, 1024) { pcm, pts -> enc.encode(pcm, pts) }.also { it.start() }
-            }.onFailure { Log.w(TAG, "audio capture unavailable", it) }.getOrNull()
+            // Power mode: capture the output as shell so the sound *moves* to the TV instead of
+            // also playing on the phone.
+            val pipe = if (app.scotty.shell.PowerMode.canCaptureDirect) app.scotty.shell.PowerMode.startCapture(48_000) else null
+            if (pipe != null) {
+                shellPipe = pipe
+                ScottyCore.log(TAG, "screen audio via shell-level output capture")
+                CastController.routingListener?.invoke(true)
+                thread(name = "shell-aac", priority = Thread.MAX_PRIORITY) {
+                    val buf = ByteArray(1024 * 4)
+                    val chunkUs = 1024 * 1_000_000L / 48_000
+                    runCatching {
+                        java.io.FileInputStream(pipe.fileDescriptor).use { input ->
+                            while (!stopped) {
+                                var n = 0
+                                while (n < buf.size) {
+                                    val r = input.read(buf, n, buf.size - n)
+                                    if (r < 0) return@use
+                                    n += r
+                                }
+                                enc.encode(buf.copyOf(), System.nanoTime() / 1000 - chunkUs)
+                            }
+                        }
+                    }.onFailure { Log.i(TAG, "shell screen audio ended: ${it.message}") }
+                }
+            } else {
+                CastController.routingListener?.invoke(false)
+                capture = runCatching {
+                    AudioCapture(projection, 48_000, 1024) { pcm, pts -> enc.encode(pcm, pts) }.also { it.start() }
+                }.onFailure { Log.w(TAG, "audio capture unavailable", it) }.getOrNull()
+            }
         }
     }
 
@@ -319,6 +380,7 @@ open class NativeSession(
     companion object {
         private const val TAG = "NativeSession"
         private const val MAX_RETRIES = 3
+        private const val MIN_BITRATE = 1_500_000
     }
 }
 

@@ -95,6 +95,11 @@ class ScreenEncoder(
         codec?.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
     }
 
+    /** Changes the target bitrate on the fly (adaptive streaming). */
+    fun setBitrate(bps: Int) {
+        runCatching { codec?.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bps) }) }
+    }
+
     fun stop() {
         running = false
         runCatching { display?.release() }

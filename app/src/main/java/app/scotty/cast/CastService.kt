@@ -145,15 +145,17 @@ class CastService : Service() {
         mediaSession = ms
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(target))
 
-        if (hasRemoteVolume) {
-            // The session reports how it captures: shell-level output capture already moves media off
-            // the phone speaker; normal playback capture needs the mute trick.
-            CastController.routingListener = { shellCapture ->
-                main.post {
-                    if (CastController.session == null) return@post
-                    if (shellCapture) useSubmixVolume() else if (Prefs.muteLocal(this)) muteLocalSpeaker()
-                }
+        // Every session reports how it captures sound: shell-level output capture already moves media
+        // off the phone speaker; normal playback capture needs the mute trick. Without this, Miracast
+        // and AirPlay screen played on the TV *and* the phone.
+        CastController.routingListener = { shellCapture ->
+            main.post {
+                if (CastController.session == null) return@post
+                if (shellCapture) useSubmixVolume(remapKeys = hasRemoteVolume)
+                else if (Prefs.muteLocal(this)) muteLocalSpeaker()
             }
+        }
+        if (hasRemoteVolume) {
             // If the playing app blocks capture, give the phone its sound back instead of silence.
             CastController.captureBlockedListener = { blocked ->
                 main.post {
@@ -201,7 +203,7 @@ class CastService : Service() {
      * touches the volume after confirming media really is routed to the capture output, so the
      * phone's own speaker volume is never changed.
      */
-    private fun useSubmixVolume() {
+    private fun useSubmixVolume(remapKeys: Boolean) {
         val stream = AudioManager.STREAM_MUSIC
         val max = audio.getStreamMaxVolume(stream).coerceAtLeast(1)
         thread(name = "submix-volume") {
@@ -214,6 +216,8 @@ class CastService : Service() {
             }
             Log.w(TAG, "media never moved to the capture output; leaving volumes alone")
         }
+        // Miracast / AirPlay screen: no receiver volume to steer – the TV's own remote does that.
+        if (!remapKeys) return
         val rec = object : BroadcastReceiver() {
             override fun onReceive(c: Context, i: Intent) {
                 if (i.getIntExtra(EXTRA_STREAM_TYPE, -1) != stream) return

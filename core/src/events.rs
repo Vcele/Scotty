@@ -14,6 +14,8 @@ pub enum Event {
     Mode { width: u32, height: u32, fps: u32, bitrate: u32, level: u32, audio: bool },
     /// Receiver asked for an IDR frame.
     KeyFrame,
+    /// Network can't keep up with the current video bitrate – lower it.
+    Congestion,
     /// Receiver shows a PIN; the app should ask the user and call `submit_pin`.
     PinRequired,
     /// New long-term pairing to store for this receiver.
@@ -31,6 +33,7 @@ impl Event {
                 format!("mode\t{width}\t{height}\t{fps}\t{bitrate}\t{level}\t{}", *audio as u8)
             }
             Event::KeyFrame => "idr".into(),
+            Event::Congestion => "congestion".into(),
             Event::PinRequired => "pin".into(),
             Event::Credentials(c) => format!("creds\t{c}"),
             Event::Ended(e) => format!("ended\t{}", e.as_deref().unwrap_or("")),

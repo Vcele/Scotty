@@ -65,13 +65,19 @@ through a small event queue (`status`, `live`, `mode`, `idr`, `pin`, `creds`, `e
 
 ### Stability measures
 
-* **Miracast**: a paced RTP sender smooths key-frame bursts to 3× the bitrate. If the link stalls,
-  it drops the backlog and requests an IDR frame so the picture recovers instead of lagging.
-  Packets are marked for the Wi-Fi video queue (WMM AC_VI). If the TV rejects a format, Scotty
-  steps down to a lower one. Keep-alives and IDR requests are answered.
-* **AirPlay audio**: a 2 s receiver buffer, retransmission from a 2048-packet history, silence
-  fill when capture stalls, and a bounded backlog. Packets go to the Wi-Fi voice queue (AC_VO),
-  TCP keep-alive is on, and a low-latency Wi-Fi lock is held.
+* **Miracast**: a paced RTP sender smooths key-frame bursts, with a small socket buffer so congestion
+  shows up immediately instead of as seconds of lag. **Adaptive bitrate** starts at 75% of the
+  mode's rate, drops by 30% as soon as the send queue builds up, and creeps back up after 10 s
+  without trouble. On overflow only *video* is discarded – audio keeps flowing, so AV receivers
+  don't lose sync – and a fresh key frame is requested. Packets are marked for the Wi-Fi video
+  queue (WMM AC_VI). If the TV rejects a format, Scotty steps down to a lower one. With power
+  mode, Scotty advertises itself as a Wi-Fi Display source (needed by Samsung TVs) and the sound
+  moves to the TV instead of also playing on the phone.
+* **AirPlay audio**: a 2 s receiver buffer, retransmission from a 2048-packet history, and a
+  bounded backlog. Silence is only filled in for real capture stalls (>300 ms), never for small
+  clock drift. Packets go to the Wi-Fi voice queue (AC_VO), TCP keep-alive is on, and a
+  low-latency Wi-Fi lock is held. If the connection drops, the playing app is paused and resumed
+  after a successful reconnect.
 * **Auto-reconnect**: a live AirPlay session that drops is re-established up to 3 times, and
   capture keeps running.
 * **Diagnostics**: the bug icon in the app shares a log of protocol exchanges, receiver capabilities
