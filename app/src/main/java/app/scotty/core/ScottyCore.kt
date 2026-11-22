@@ -37,6 +37,14 @@ object ScottyCore {
     /** Next event as tab-separated text (`status`, `live`, `mode`, `idr`, `pin`, `creds`, `ended`), or null on timeout. */
     external fun pollEvent(handle: Long, timeoutMs: Int): String?
 
+    /** Adds a line to the in-memory diagnostics log (also goes to logcat). */
+    fun log(tag: String, msg: String) {
+        android.util.Log.i(tag, msg)
+        runCatching { note(tag, msg) }
+    }
+
+    private external fun note(tag: String, msg: String)
+
     /** Scotty core's recent log lines (kept in memory, survive logcat rotation). */
     external fun recentLog(): String
 

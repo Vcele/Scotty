@@ -172,3 +172,11 @@ pub extern "system" fn Java_app_scotty_core_ScottyCore_setMetadata(
 pub extern "system" fn Java_app_scotty_core_ScottyCore_recentLog(env: JNIEnv, _c: JClass) -> jstring {
     env.new_string(crate::ringlog::dump()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
 }
+
+/// Lets the Kotlin side add lines to the in-memory diagnostics log.
+#[no_mangle]
+pub extern "system" fn Java_app_scotty_core_ScottyCore_note(mut env: JNIEnv, _c: JClass, tag: JString, msg: JString) {
+    let tag = string(&mut env, &tag);
+    let msg = string(&mut env, &msg);
+    crate::ringlog::remember(log::Level::Info, &tag, &msg);
+}

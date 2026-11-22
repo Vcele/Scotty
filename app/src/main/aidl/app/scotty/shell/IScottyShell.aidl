@@ -15,4 +15,11 @@ interface IScottyShell {
     ParcelFileDescriptor startCapture(int sampleRate) = 2;
 
     void stopCapture() = 3;
+
+    /**
+     * Advertises (or stops advertising) this phone as a Wi-Fi Display *source* in its Wi-Fi Direct
+     * information element. Needs NETWORK_SETTINGS, which shell has; regular apps are refused.
+     * Returns "ok" or a reason.
+     */
+    String setWfdSource(boolean enable, int controlPort) = 4;
 }

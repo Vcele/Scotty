@@ -175,6 +175,10 @@ object PowerMode {
     fun startCapture(sampleRate: Int): ParcelFileDescriptor? = runCatching { awaitService()?.startCapture(sampleRate) }
         .onFailure { Log.w(TAG, "shell capture failed", it) }.getOrNull()
 
+    /** Wi-Fi Display source advertisement through the shell helper; null if power mode is off. */
+    fun setWfdSource(enable: Boolean): String? =
+        runCatching { service?.setWfdSource(enable, 7236) }.getOrElse { "error: ${it.message}" }
+
     /** Runs a shell command through the helper; returns its output, or null if unavailable. */
     fun exec(command: String): String? = runCatching { service?.exec(command)?.substringAfter('\n') }.getOrNull()
 
