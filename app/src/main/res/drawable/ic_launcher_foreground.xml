@@ -1,16 +1,40 @@
+<!-- Source: art/icon.svg. A screen being "beamed up" from a transporter pad. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
-    <!-- phone -->
-    <path android:fillColor="#FFB9A8FF"
-        android:pathData="M36,34h18a4,4 0,0 1,4 4v32a4,4 0,0 1,-4 4h-18a4,4 0,0 1,-4 -4v-32a4,4 0,0 1,4 -4z" />
-    <path android:fillColor="#FF1B1340"
-        android:pathData="M38,40h14v26h-14z" />
-    <!-- beams -->
-    <path android:strokeColor="#FFFFC6E8" android:strokeWidth="4" android:strokeLineCap="round"
-        android:fillColor="#00000000" android:pathData="M64,46a10,10 0,0 1,0 16" />
-    <path android:strokeColor="#FFFFC6E8" android:strokeWidth="4" android:strokeLineCap="round"
-        android:fillColor="#00000000" android:pathData="M70,40a18,18 0,0 1,0 28" />
-    <path android:strokeColor="#FF9BE7FF" android:strokeWidth="4" android:strokeLineCap="round"
-        android:fillColor="#00000000" android:pathData="M76,34a26,26 0,0 1,0 40" />
+    <!-- beam -->
+    <path android:pathData="M37,79L42,53H66L71,79Z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear" android:startX="54" android:startY="79" android:endX="54" android:endY="53">
+                <item android:offset="0" android:color="#D99BE7FF" />
+                <item android:offset="1" android:color="#26FFC6E8" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- screen -->
+    <path android:fillColor="#FFF3EEFF"
+        android:pathData="M35,27h38a5,5 0,0 1,5 5v20a5,5 0,0 1,-5 5h-38a5,5 0,0 1,-5 -5v-20a5,5 0,0 1,5 -5z" />
+    <path android:pathData="M36,31h36a2,2 0,0 1,2 2v18a2,2 0,0 1,-2 2h-36a2,2 0,0 1,-2 -2v-18a2,2 0,0 1,2 -2z">
+        <aapt:attr name="android:fillColor">
+            <gradient android:type="linear" android:startX="34" android:startY="31" android:endX="74" android:endY="53">
+                <item android:offset="0" android:color="#FFFFC6E8" />
+                <item android:offset="1" android:color="#FF9BE7FF" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- pad -->
+    <path android:fillColor="#FF9BE7FF"
+        android:pathData="M35,80a19,4.5 0,1 0,38 0a19,4.5 0,1 0,-38 0z" />
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M42,79a12,2.2 0,1 0,24 0a12,2.2 0,1 0,-24 0z" />
+    <!-- sparkles -->
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M48,63l1.4,3.6 3.6,1.4 -3.6,1.4 -1.4,3.6 -1.4,-3.6 -3.6,-1.4 3.6,-1.4z" />
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M61,58.5l1,2.5 2.5,1 -2.5,1 -1,2.5 -1,-2.5 -2.5,-1 2.5,-1z" />
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M57.6,71a1.4,1.4 0,1 0,2.8 0a1.4,1.4 0,1 0,-2.8 0z" />
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M52,58a1,1 0,1 0,2 0a1,1 0,1 0,-2 0z" />
 </vector>

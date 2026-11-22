@@ -1,0 +1,11 @@
+Categories:
+  - Multimedia
+License: MIT
+Name: Scotty
+Summary: Beam your screen and sound to Miracast TVs and AirPlay speakers
+Description: |-
+  Scotty mirrors your screen to Miracast (Wi-Fi Display) TVs and casts screen
+  and sound, or sound only, to AirPlay and AirPlay 2 receivers, including
+  HomePod and Apple TV pairing. Quick Settings tile, song info and cover art.
+SourceCode: https://github.com/Vcele/Scotty
+IssueTracker: https://github.com/Vcele/Scotty/issues
